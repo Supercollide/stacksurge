@@ -11,6 +11,7 @@ namespace StackSurge.UI
     {
         private SaveData _save;
         private Action _onSettingsChanged;
+        private Action _onSocialSettingsChanged;
 
         private GameObject _overlayObj;
         private RectTransform _dialogPanel;
@@ -19,12 +20,16 @@ namespace StackSurge.UI
         private Toggle _leaderboardToggle;
         private Toggle _friendsToggle;
         private Toggle _remindersToggle;
+        private Toggle _allowRequestsToggle;
         private Button _closeButton;
 
-        public void Initialize(SaveData save, Action onSettingsChanged = null)
+        /// <param name="onSettingsChanged">Called after any notification toggle changes (reschedule reminders, sync tags).</param>
+        /// <param name="onSocialSettingsChanged">Called after a social toggle changes (publish public prefs).</param>
+        public void Initialize(SaveData save, Action onSettingsChanged = null, Action onSocialSettingsChanged = null)
         {
             _save = save;
             _onSettingsChanged = onSettingsChanged;
+            _onSocialSettingsChanged = onSocialSettingsChanged;
 
             BuildUIProgrammatically();
             UpdateToggleStates();
@@ -63,7 +68,7 @@ namespace StackSurge.UI
             _dialogPanel = dialogObj.AddComponent<RectTransform>();
             _dialogPanel.anchorMin = new Vector2(0.5f, 0.5f);
             _dialogPanel.anchorMax = new Vector2(0.5f, 0.5f);
-            _dialogPanel.sizeDelta = new Vector2(850, 750);
+            _dialogPanel.sizeDelta = new Vector2(850, 860);
             _dialogPanel.localScale = Vector3.one * 0.8f;
 
             Image dialogBg = dialogObj.AddComponent<Image>();
@@ -101,7 +106,7 @@ namespace StackSurge.UI
             GameObject descObj = new GameObject("Description");
             descObj.transform.SetParent(layoutObj.transform, false);
             TextMeshProUGUI descText = descObj.AddComponent<TextMeshProUGUI>();
-            descText.text = "Customize which push notifications and alerts you receive:";
+            descText.text = "Customize which alerts you receive and who can add you:";
             descText.fontSize = 22;
             descText.alignment = TextAlignmentOptions.Center;
             descText.color = new Color(0.75f, 0.80f, 0.90f);
@@ -110,6 +115,7 @@ namespace StackSurge.UI
             _leaderboardToggle = CreateToggleRow(layoutObj.transform, "Leaderboard Position Drops", "Alert when someone overtakes your high score rank");
             _friendsToggle = CreateToggleRow(layoutObj.transform, "Friend Activity", "Alert on new friend requests and accepted requests");
             _remindersToggle = CreateToggleRow(layoutObj.transform, "Streak & Game Reminders", "Daily streak protection and leaderboard reset alerts");
+            _allowRequestsToggle = CreateToggleRow(layoutObj.transform, "Allow Friend Requests", "Let other players send you friend requests from the leaderboard");
 
             // Close Button
             GameObject btnObj = new GameObject("CloseButton");
@@ -128,7 +134,7 @@ namespace StackSurge.UI
             btnTextRect.anchorMin = Vector2.zero;
             btnTextRect.anchorMax = Vector2.one;
             TextMeshProUGUI btnText = btnTextObj.AddComponent<TextMeshProUGUI>();
-            btnText.text = "Save & Close";
+            btnText.text = "Close";
             btnText.fontSize = 26;
             btnText.fontStyle = FontStyles.Bold;
             btnText.alignment = TextAlignmentOptions.Center;
@@ -138,6 +144,7 @@ namespace StackSurge.UI
             _leaderboardToggle.onValueChanged.AddListener(OnLeaderboardToggleChanged);
             _friendsToggle.onValueChanged.AddListener(OnFriendsToggleChanged);
             _remindersToggle.onValueChanged.AddListener(OnRemindersToggleChanged);
+            _allowRequestsToggle.onValueChanged.AddListener(OnAllowRequestsToggleChanged);
 
             _overlayObj.SetActive(false);
         }
@@ -211,6 +218,7 @@ namespace StackSurge.UI
             _leaderboardToggle.SetIsOnWithoutNotify(_save.NotifyLeaderboardDrops);
             _friendsToggle.SetIsOnWithoutNotify(_save.NotifyFriendActivity);
             _remindersToggle.SetIsOnWithoutNotify(_save.NotifyReminders);
+            _allowRequestsToggle.SetIsOnWithoutNotify(_save.AllowFriendRequests);
         }
 
         private void OnLeaderboardToggleChanged(bool val)
@@ -225,6 +233,15 @@ namespace StackSurge.UI
             if (_save != null) _save.NotifyFriendActivity = val;
             LocalProgress.Save(_save);
             _onSettingsChanged?.Invoke();
+            // Friend-activity opt-out is public so other clients skip pushing to us.
+            _onSocialSettingsChanged?.Invoke();
+        }
+
+        private void OnAllowRequestsToggleChanged(bool val)
+        {
+            if (_save != null) _save.AllowFriendRequests = val;
+            LocalProgress.Save(_save);
+            _onSocialSettingsChanged?.Invoke();
         }
 
         private void OnRemindersToggleChanged(bool val)

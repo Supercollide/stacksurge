@@ -51,6 +51,7 @@ namespace StackSurge.UI
         private FriendsTab _activeTab = FriendsTab.FriendsList;
         private int _refreshGeneration = 0;
         private GameObject _cachedScrollViewObj;
+        private bool _frozeClockOnOpen; // true only if WE paused the game when opening
 
         private void Awake()
         {
@@ -179,11 +180,23 @@ namespace StackSurge.UI
             }
         }
 
-        public void OpenPanel()
+        public void OpenPanel() => OpenPanel(_activeTab);
+
+        /// <summary>Opens the panel on a specific tab (used when routing from a push notification).</summary>
+        public void OpenPanel(FriendsTab tab)
         {
             if (_friendsRoot == null) return;
 
+            _activeTab = tab;
+            bool wasOpen = _friendsRoot.activeSelf;
             _friendsRoot.SetActive(true);
+
+            // Freeze the game clock only if it was running (mid-run). From the main menu or pause menu, leave it alone.
+            if (!wasOpen)
+            {
+                _frozeClockOnOpen = Time.timeScale > 0f;
+                if (_frozeClockOnOpen) Time.timeScale = 0f;
+            }
 
             if (_myPlayerIdText != null && _friendsService != null)
             {
@@ -194,12 +207,17 @@ namespace StackSurge.UI
             _friendsRoot.transform.localScale = Vector3.one * 0.95f;
             _friendsRoot.transform.DOScale(1f, 0.2f).SetEase(Ease.OutCubic).SetUpdate(true);
 
-            _ = RefreshTabAsync();
+            _ = RefreshTabAsync(forceServerRefresh: true);
         }
 
         public void ClosePanel()
         {
-            if (_friendsRoot == null) return;
+            if (_friendsRoot == null || !_friendsRoot.activeSelf) return;
+
+            // Restore the clock only if we were the ones who stopped it.
+            if (_frozeClockOnOpen) Time.timeScale = 1f;
+            _frozeClockOnOpen = false;
+
             _friendsRoot.transform.DOScale(0.95f, 0.15f).SetEase(Ease.InCubic).SetUpdate(true).OnComplete(() =>
             {
                 _friendsRoot.SetActive(false);
@@ -245,13 +263,22 @@ namespace StackSurge.UI
             }
         }
 
-        public async Task RefreshTabAsync()
+        public async Task RefreshTabAsync(bool forceServerRefresh = false)
         {
             if (_friendsService == null) return;
 
             int generation = ++_refreshGeneration;
 
             UpdateTabVisuals();
+
+            if (forceServerRefresh)
+            {
+                // Pull the latest relationships from the server so changes made while the app was
+                // backgrounded (accepted requests, removals) show without a restart.
+                try { await _friendsService.RefreshAsync(force: true); }
+                catch (Exception e) { Debug.LogWarning("[FriendsManagerUI] Refresh failed: " + e.Message); }
+                if (generation != _refreshGeneration) return;
+            }
 
             switch (_activeTab)
             {
@@ -262,7 +289,7 @@ namespace StackSurge.UI
                     await LoadPendingRequestsAsync(generation);
                     break;
                 case FriendsTab.AddFriend:
-                    SetStatus("Enter a Player ID above to send a friend request.");
+                    SetStatus("Enter a Player ID or full name (Name#1234) to send a friend request.");
                     break;
                 case FriendsTab.BlockedUsers:
                     await LoadBlockedUsersAsync(generation);
@@ -367,24 +394,44 @@ namespace StackSurge.UI
         {
             if (_targetPlayerIdInput == null || string.IsNullOrWhiteSpace(_targetPlayerIdInput.text))
             {
-                SetStatus("Please enter a valid Player ID.");
+                SetStatus("Please enter a Player ID or full name (Name#1234).");
                 return;
             }
 
             string targetId = _targetPlayerIdInput.text.Trim();
+            if (_sendRequestButton != null) _sendRequestButton.interactable = false;
             SetStatus($"Sending request to {targetId}...");
 
-            bool success = await _friendsService.SendFriendRequestAsync(targetId);
-            if (success)
+            FriendRequestResult result = await _friendsService.SendFriendRequestAsync(targetId);
+
+            if (_sendRequestButton != null) _sendRequestButton.interactable = true;
+
+            switch (result)
             {
-                SetStatus($"Friend request sent to {targetId}!");
-                _targetPlayerIdInput.text = "";
-                await Task.Delay(1000);
-                SetTab(FriendsTab.PendingRequests);
-            }
-            else
-            {
-                SetStatus($"Failed to send friend request to {targetId}. Check ID or connection.");
+                case FriendRequestResult.Sent:
+                    SetStatus($"Friend request sent to {targetId}!");
+                    _targetPlayerIdInput.text = "";
+                    await Task.Delay(1000);
+                    SetTab(FriendsTab.PendingRequests);
+                    break;
+                case FriendRequestResult.AlreadyFriends:
+                    SetStatus("You are already friends with that player.");
+                    break;
+                case FriendRequestResult.AlreadyPending:
+                    SetStatus("A request to that player is already pending.");
+                    break;
+                case FriendRequestResult.TargetDisallows:
+                    SetStatus("That player isn't accepting friend requests right now.");
+                    break;
+                case FriendRequestResult.Blocked:
+                    SetStatus("You can't send a request to that player.");
+                    break;
+                case FriendRequestResult.NotFound:
+                    SetStatus("No player found. Use their Player ID or full name (Name#1234).");
+                    break;
+                default:
+                    SetStatus($"Failed to send friend request to {targetId}. Check your connection.");
+                    break;
             }
         }
 

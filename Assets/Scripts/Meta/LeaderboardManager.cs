@@ -46,10 +46,14 @@ namespace StackSurge.Meta
         private Func<LeaderboardScope, Task<LeaderboardEntryData?>> _getPlayerEntry;
         private Func<string, Task> _setPlayerName;
         private Func<string> _getPlayerName;
-        private Action<string> _onAddFriend;
+        private Func<string, Task<FriendRequestResult>> _onAddFriend;
+        private Func<string, FriendRelationState> _getRelationState;
+        private Func<IEnumerable<string>, Task<Dictionary<string, SocialPrefs>>> _getSocialPrefs;
+        private Func<Task> _refreshFriends;
         private LeaderboardScope _activeScope = LeaderboardScope.AllTime;
         private LeaderboardFilterMode _activeFilter = LeaderboardFilterMode.Global;
         private int _refreshGeneration = 0; // incremented on every refresh; stale calls self-abort
+        private bool _frozeClockOnOpen;        // true only if WE paused the game when opening
 
         [SerializeField] private Button _setPlayerNameButton;
         [SerializeField] private Button _closeButton;
@@ -102,9 +106,12 @@ namespace StackSurge.Meta
             Func<LeaderboardScope, Task<LeaderboardEntryData?>> getPlayerEntry,
             Func<string, Task> setPlayerName,
             Func<string> getPlayerName,
-            Action<string> onAddFriend = null,
+            Func<string, Task<FriendRequestResult>> onAddFriend = null,
             Func<LeaderboardScope, List<string>, Task<LeaderboardEntryData[]>> getFriendsScores = null,
-            Func<Task<List<string>>> getFriendIds = null)
+            Func<Task<List<string>>> getFriendIds = null,
+            Func<string, FriendRelationState> getRelationState = null,
+            Func<IEnumerable<string>, Task<Dictionary<string, SocialPrefs>>> getSocialPrefs = null,
+            Func<Task> refreshFriends = null)
         {
             _getLeaderboardScores = getLeaderboardScores;
             _getPlayerEntry       = getPlayerEntry;
@@ -113,6 +120,9 @@ namespace StackSurge.Meta
             _onAddFriend          = onAddFriend;
             _getFriendsScores     = getFriendsScores;
             _getFriendIds         = getFriendIds;
+            _getRelationState     = getRelationState;
+            _getSocialPrefs       = getSocialPrefs;
+            _refreshFriends       = refreshFriends;
 
             if (_playerNameInput != null)
                 _playerNameInput.text = _getPlayerName?.Invoke() ?? "";
@@ -136,6 +146,12 @@ namespace StackSurge.Meta
                 ? $"Loading {_activeScope.ToString().ToLower()} friend scores..."
                 : $"Loading {_activeScope.ToString().ToLower()} scores...";
             _leaderboardStatusText.gameObject.SetActive(true);
+
+            // Make sure relationship states (Friends / Pending) are current before rows are built.
+            if (_refreshFriends != null)
+            {
+                try { await _refreshFriends(); } catch { /* non-critical */ }
+            }
 
             LeaderboardEntryData[] entries = Array.Empty<LeaderboardEntryData>();
             if (_activeFilter == LeaderboardFilterMode.FriendsOnly && _getFriendsScores != null && _getFriendIds != null)
@@ -197,7 +213,8 @@ namespace StackSurge.Meta
                     displayRank = globalPlayerEntry.Value.Rank;
             }
 
-            if (displayRank.HasValue)
+            // Friends-relative ranks are not comparable across sessions; only track global rank drops.
+            if (displayRank.HasValue && _activeFilter == LeaderboardFilterMode.Global)
             {
                 NotificationService.Instance?.CheckAndNotifyRankDrop(displayRank.Value, _activeScope, $"{_activeScope} Leaderboard");
             }
@@ -220,26 +237,93 @@ namespace StackSurge.Meta
             }
 
             // Build rows
+            var rows = new List<LeaderboardRowView>(entries.Length + 1);
             for (int i = 0; i < entries.Length; i++)
             {
                 var row = Instantiate(_rowPrefab, _leaderboardRowContainer, false);
-                row.Setup(entries[i], _goldMedal, _silverMedal, _bronzeMedal, i, _onAddFriend);
+                row.Setup(entries[i], _goldMedal, _silverMedal, _bronzeMedal, i, _onAddFriend, RelationFor(entries[i]));
+                rows.Add(row);
             }
 
             // In Global mode, if player is outside top 15, append overflow row as #16
             if (_activeFilter == LeaderboardFilterMode.Global && !currentInList.HasValue && globalPlayerEntry.HasValue)
             {
                 var overflowRow = Instantiate(_rowPrefab, _leaderboardRowContainer, false);
-                overflowRow.Setup(globalPlayerEntry.Value, _goldMedal, _silverMedal, _bronzeMedal, entries.Length, _onAddFriend);
+                overflowRow.Setup(globalPlayerEntry.Value, _goldMedal, _silverMedal, _bronzeMedal, entries.Length, _onAddFriend, FriendRelationState.Self);
+                rows.Add(overflowRow);
+            }
+
+            _ = ApplyTargetPreferencesAsync(rows, entries, generation);
+        }
+
+        private FriendRelationState RelationFor(LeaderboardEntryData entry)
+        {
+            if (entry.IsCurrentPlayer) return FriendRelationState.Self;
+            if (_getRelationState == null) return FriendRelationState.None;
+            try { return _getRelationState(entry.PlayerId); }
+            catch { return FriendRelationState.None; }
+        }
+
+        /// <summary>
+        /// Players who turned off incoming friend requests publish that preference; hide Add Friend for them.
+        /// Runs after rows are shown so the leaderboard never waits on these lookups.
+        /// </summary>
+        private async Task ApplyTargetPreferencesAsync(List<LeaderboardRowView> rows, LeaderboardEntryData[] entries, int generation)
+        {
+            if (_getSocialPrefs == null) return;
+
+            var candidateIds = new List<string>();
+            for (int i = 0; i < entries.Length; i++)
+            {
+                if (!entries[i].IsCurrentPlayer && RelationFor(entries[i]) == FriendRelationState.None && !string.IsNullOrEmpty(entries[i].PlayerId))
+                    candidateIds.Add(entries[i].PlayerId);
+            }
+            if (candidateIds.Count == 0) return;
+
+            Dictionary<string, SocialPrefs> prefs;
+            try { prefs = await _getSocialPrefs(candidateIds); }
+            catch { return; }
+
+            if (generation != _refreshGeneration || prefs == null) return;
+
+            foreach (var row in rows)
+            {
+                if (row == null || string.IsNullOrEmpty(row.PlayerId)) continue;
+                if (prefs.TryGetValue(row.PlayerId, out var p) && p != null && !p.allowFriendRequests)
+                    row.SetTargetDisallowsRequests();
             }
         }
 
         public void HideLeaderboard()
         {
-            if (_leaderboardRoot != null)
+            if (_leaderboardRoot != null && _leaderboardRoot.activeSelf)
             {
                 _leaderboardRoot.SetActive(false);
+                RestoreClock();
             }
+        }
+
+        /// <summary>
+        /// Freeze the game clock only if it was running when the panel opened. Opening from the main menu
+        /// or the pause menu (clock already stopped) must not change anything, and closing must not unpause.
+        /// </summary>
+        private void FreezeClockIfRunning()
+        {
+            _frozeClockOnOpen = Time.timeScale > 0f;
+            if (_frozeClockOnOpen) Time.timeScale = 0f;
+        }
+
+        private void RestoreClock()
+        {
+            if (_frozeClockOnOpen) Time.timeScale = 1f;
+            _frozeClockOnOpen = false;
+        }
+
+        /// <summary>Opens the leaderboard if it is not already visible (used for push routing).</summary>
+        public void ShowLeaderboard()
+        {
+            if (_leaderboardRoot == null || _leaderboardRoot.activeSelf) return;
+            ToggleLeaderboard();
         }
 
         // --- UI INTERACTION ---
@@ -249,10 +333,11 @@ namespace StackSurge.Meta
 
             bool active = !_leaderboardRoot.activeSelf;
             _leaderboardRoot.SetActive(active);
-            Time.timeScale = active ? 0f : 1f;
 
             if (active)
             {
+                FreezeClockIfRunning();
+
                 // Animation logic
                 var cg = _leaderboardRoot.GetComponent<CanvasGroup>();
                 if (cg)
@@ -268,6 +353,10 @@ namespace StackSurge.Meta
 
                 RefreshLeaderboardScopeUi();
                 _ = RefreshLeaderboard(); // Trigger refresh when opening
+            }
+            else
+            {
+                RestoreClock();
             }
         }
 

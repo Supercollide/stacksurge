@@ -66,7 +66,10 @@ namespace StackSurge.Meta
         /// flushed automatically on the next online session.
         /// The dashboard "Best score" update type means UGS only stores the value if it is higher.
         /// </summary>
-        public async Task SubmitScoreAsync(int score)
+        /// <param name="score">The run's score.</param>
+        /// <param name="previousBest">The player's all-time best BEFORE this run, or -1 if unknown.
+        /// Friend "overtaken" notifications only fire when this run is a new personal best.</param>
+        public async Task SubmitScoreAsync(int score, int previousBest = -1)
         {
             if (!_isOnline)
             {
@@ -80,7 +83,7 @@ namespace StackSurge.Meta
                 return;
             }
 
-            await SubmitToCloudAsync(score);
+            await SubmitToCloudAsync(score, previousBest);
         }
 
         // ── Flush pending offline score ─────────────────────────────────────
@@ -91,7 +94,8 @@ namespace StackSurge.Meta
             int pending = _save.PendingLeaderboardScore;
             Debug.Log($"[LeaderboardService] Flushing offline-queued score: {pending}");
 
-            await SubmitToCloudAsync(pending);
+            // Previous best unknown for a queued score; skip friend notifications to avoid spurious pushes.
+            await SubmitToCloudAsync(pending, previousBest: int.MaxValue);
 
             // Clear the queue only on success (SubmitToCloudAsync swallows its own exceptions)
             _save.PendingLeaderboardScore = -1;
@@ -99,7 +103,7 @@ namespace StackSurge.Meta
         }
 
         // ── Internal submit ─────────────────────────────────────────────────
-        private async Task SubmitToCloudAsync(int score)
+        private async Task SubmitToCloudAsync(int score, int previousBest)
         {
             foreach (string leaderboardId in new[] { DailyLeaderboardId, WeeklyLeaderboardId, AllTimeLeaderboardId })
             {
@@ -114,28 +118,37 @@ namespace StackSurge.Meta
                 }
             }
 
-            // Check if any friends' scores were beaten
-            if (_friendsService != null)
+            await NotifyOvertakenFriendsAsync(score, previousBest);
+        }
+
+        /// <summary>
+        /// Notifies friends whose all-time score this run just passed. Only runs on a new personal best,
+        /// and only for friends who were at or above the previous best, so nobody is pinged twice.
+        /// </summary>
+        private async Task NotifyOvertakenFriendsAsync(int score, int previousBest)
+        {
+            if (_friendsService == null) return;
+            if (previousBest >= 0 && score <= previousBest) return; // not a new personal best
+
+            try
             {
-                try
+                var friendIds = await _friendsService.GetFriendPlayerIdsAsync();
+                if (friendIds == null || friendIds.Count == 0) return;
+
+                var friendEntries = await GetFriendsScoresAsync(LeaderboardScope.AllTime, friendIds);
+                foreach (var friend in friendEntries)
                 {
-                    var friendIds = await _friendsService.GetFriendPlayerIdsAsync();
-                    if (friendIds != null && friendIds.Count > 0)
-                    {
-                        var friendEntries = await GetFriendsScoresAsync(LeaderboardScope.AllTime, friendIds);
-                        foreach (var friend in friendEntries)
-                        {
-                            if (!friend.IsCurrentPlayer && friend.Score > 0 && score > friend.Score)
-                            {
-                                NotificationService.Instance?.NotifyFriendBeatScore(friend.PlayerName, score, friend.PlayerId, "AllTime");
-                            }
-                        }
-                    }
+                    if (friend.IsCurrentPlayer || friend.Score <= 0) continue;
+                    if (score <= friend.Score) continue;                          // not beaten
+                    if (previousBest >= 0 && friend.Score < previousBest) continue; // were already above them
+
+                    NotificationService.Instance?.ShowBeatFriendToast(friend.PlayerName, score);
+                    _ = NotificationService.Instance?.PushFriendBeatScoreAsync(friend.PlayerId, score, "AllTime");
                 }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[LeaderboardService] Check beaten friend scores warning: {ex.Message}");
-                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[LeaderboardService] Check beaten friend scores warning: {ex.Message}");
             }
         }
 

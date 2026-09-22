@@ -43,7 +43,14 @@ namespace StackSurge.Meta
         public int LastKnownRankDaily = -1;
         public int LastKnownRankWeekly = -1;
         public int LastKnownRankAllTime = -1;
+        // Period the daily/weekly rank was recorded in, so a board reset is not mistaken for a drop.
+        public string LastKnownRankDailyPeriod = "";
+        public string LastKnownRankWeeklyPeriod = "";
         public string DevicePushToken = "";
+
+        // ── Social Settings ────────────────────────────────────────────
+        /// <summary>When false, other players cannot send this player friend requests (published to Cloud Save public data).</summary>
+        public bool AllowFriendRequests = true;
     }
 
     public static class LocalProgress

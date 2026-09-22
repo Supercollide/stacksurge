@@ -189,6 +189,46 @@ namespace StackSurge
             _ = _friendsService.EnsureInitializedAsync();
 
             _leaderboardService = new LeaderboardService(_provider.IsOnline, _save, _friendsService);
+            RegisterLeaderboardCallbacks();
+
+            _view.UpdateLoadingStatus(_provider.IsOnline ? "ONLINE" : "NO INTERNET, PLAYING OFFLINE");
+            _challenges = new ChallengeTracker(_provider);
+
+            // Initialize Notification System & Programmatic Settings UI
+            NotificationService.EnsureInstance(_save);
+            if (NotificationService.Instance != null)
+            {
+                // Remote pushes honour the RECIPIENT's public preference (read from Cloud Save).
+                NotificationService.Instance.RecipientPrefsResolver = id => _friendsService.GetSocialPrefsAsync(id);
+                NotificationService.Instance.OnPushOpened -= OnPushOpened;
+                NotificationService.Instance.OnPushOpened += OnPushOpened;
+                NotificationService.Instance.RescheduleReminders();
+            }
+
+            GameObject notifSettingsObj = new GameObject("[NotificationSettingsUI]");
+            _notificationSettingsUI = notifSettingsObj.AddComponent<NotificationSettingsUI>();
+            _notificationSettingsUI.Initialize(
+                _save,
+                onSettingsChanged: () =>
+                {
+                    NotificationService.Instance?.RescheduleReminders();
+                    NotificationService.Instance?.SyncPreferenceTags();
+                },
+                onSocialSettingsChanged: () => { _ = _friendsService?.PublishSocialPrefsAsync(); });
+
+            _view.EnableStartButton();
+        }
+
+        private NotificationSettingsUI _notificationSettingsUI;
+
+        /// <summary>
+        /// Single place that wires every leaderboard callback. Called at bootstrap and again after a rename,
+        /// so the friends-related callbacks are never dropped.
+        /// </summary>
+        void RegisterLeaderboardCallbacks()
+        {
+            if (_leaderboardManager == null || _leaderboardService == null) return;
+
             _leaderboardManager.SetLeaderboardCallbacks(
                 scope => _leaderboardService.GetTopScoresAsync(scope),
                 scope => _leaderboardService.GetPlayerEntryAsync(scope),
@@ -197,38 +237,46 @@ namespace StackSurge
                     _save.PlayerDisplayName = name;
                     LocalProgress.Save(_save);
                     await _leaderboardService.SetPlayerNameAsync(name);
+                    _view.RefreshMainMenuStats();
                 },
                 () => _save.PlayerDisplayName,
-                async targetPlayerId =>
+                onAddFriend: async targetPlayerId =>
                 {
-                    if (_friendsService != null)
-                    {
-                        bool success = await _friendsService.SendFriendRequestAsync(targetPlayerId);
-                        Debug.Log($"[StackSurgeGame] Leaderboard Add Friend to {targetPlayerId}: {(success ? "Success" : "Failed")}");
-                    }
+                    if (_friendsService == null) return FriendRequestResult.Failed;
+                    var result = await _friendsService.SendFriendRequestAsync(targetPlayerId);
+                    Debug.Log($"[StackSurgeGame] Leaderboard Add Friend to {targetPlayerId}: {result}");
+                    return result;
                 },
-                async (scope, friendIds) => await _leaderboardService.GetFriendsScoresAsync(scope, friendIds),
-                async () => _friendsService != null ? await _friendsService.GetFriendPlayerIdsAsync() : new System.Collections.Generic.List<string>()
+                getFriendsScores: (scope, friendIds) => _leaderboardService.GetFriendsScoresAsync(scope, friendIds),
+                getFriendIds: async () => _friendsService != null ? await _friendsService.GetFriendPlayerIdsAsync() : new System.Collections.Generic.List<string>(),
+                getRelationState: id => _friendsService != null ? _friendsService.GetRelationState(id) : FriendRelationState.None,
+                getSocialPrefs: ids => _friendsService.GetSocialPrefsBatchAsync(ids),
+                refreshFriends: () => _friendsService != null ? _friendsService.RefreshAsync() : Task.CompletedTask
             );
-
-            _view.UpdateLoadingStatus(_provider.IsOnline ? "ONLINE" : "NO INTERNET, PLAYING OFFLINE");
-            _challenges = new ChallengeTracker(_provider);
-
-            // Initialize Notification System & Programmatic Settings UI
-            NotificationService.EnsureInstance(_save);
-            NotificationService.Instance?.CancelAllScheduledNotifications();
-            NotificationService.Instance?.ScheduleStreakProtectionReminder();
-            NotificationService.Instance?.ScheduleLeaderboardResetReminder();
-            NotificationService.Instance?.ScheduleInactivityReminder();
-
-            GameObject notifSettingsObj = new GameObject("[NotificationSettingsUI]");
-            _notificationSettingsUI = notifSettingsObj.AddComponent<NotificationSettingsUI>();
-            _notificationSettingsUI.Initialize(_save);
-
-            _view.EnableStartButton();
         }
 
-        private NotificationSettingsUI _notificationSettingsUI;
+        /// <summary>Routes a tapped remote push to the matching screen.</summary>
+        void OnPushOpened(PushKind kind)
+        {
+            if (_playing || _inTutorial) return; // don't yank the player out of a run
+
+            switch (kind)
+            {
+                case PushKind.FriendRequest:
+                    _friendsManagerUI?.OpenPanel(FriendsTab.PendingRequests);
+                    break;
+                case PushKind.FriendRequestAccepted:
+                    _friendsManagerUI?.OpenPanel(FriendsTab.FriendsList);
+                    break;
+                case PushKind.FriendBeatScore:
+                    if (_leaderboardManager != null)
+                    {
+                        _leaderboardManager.SetFilterMode(LeaderboardFilterMode.FriendsOnly);
+                        _leaderboardManager.ShowLeaderboard();
+                    }
+                    break;
+            }
+        }
 
         public void OpenNotificationSettings()
         {
@@ -242,11 +290,18 @@ namespace StackSurge
         {
             if (pauseStatus)
             {
-                NotificationService.Instance?.CancelAllScheduledNotifications();
-                NotificationService.Instance?.ScheduleStreakProtectionReminder();
-                NotificationService.Instance?.ScheduleLeaderboardResetReminder();
-                NotificationService.Instance?.ScheduleInactivityReminder();
+                NotificationService.Instance?.RescheduleReminders();
+                if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Offline);
             }
+            else
+            {
+                if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Online);
+            }
+        }
+
+        void OnApplicationQuit()
+        {
+            if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Offline);
         }
 
         void Start()
@@ -568,6 +623,7 @@ namespace StackSurge
         {
             _playing = false;
             _challenges.TickRun(_timeAlive, _score.TotalScore, _score.BestComboMultiplier);
+            int previousBest = _save.AllTimeHigh; // capture before RegisterRunEnd updates it
             LocalProgress.RegisterRunEnd(_score.TotalScore, _save);
 
             if (_provider != null)
@@ -576,7 +632,7 @@ namespace StackSurge
             }
 
             if (_leaderboardService != null)
-                _ = _leaderboardService.SubmitScoreAsync(_score.TotalScore);
+                _ = _leaderboardService.SubmitScoreAsync(_score.TotalScore, previousBest);
             
             _view.ShowGameOver(_score.TotalScore, _save.DailyBest, _save.AllTimeHigh, _save.Streak);
         }
@@ -660,19 +716,8 @@ namespace StackSurge
             if (name.Length < 1 || name.Length > 20) return;
             _save.PlayerDisplayName = name;
             LocalProgress.Save(_save);
-            
-            _leaderboardManager.SetLeaderboardCallbacks(
-                scope => _leaderboardService.GetTopScoresAsync(scope),
-                scope => _leaderboardService.GetPlayerEntryAsync(scope),
-                async n =>
-                {
-                    _save.PlayerDisplayName = n;
-                    LocalProgress.Save(_save);
-                    await _leaderboardService.SetPlayerNameAsync(n);
-                    _view.RefreshMainMenuStats();
-                },
-                () => _save.PlayerDisplayName
-            );
+
+            RegisterLeaderboardCallbacks();
 
             if (_leaderboardService != null)
             {

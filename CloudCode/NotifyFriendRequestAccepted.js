@@ -8,7 +8,10 @@
 const axios = require("axios");
 
 const ONESIGNAL_APP_ID  = "f077f714-74c3-469e-b1a0-ec993de725a9";
-const ONESIGNAL_API_KEY = "YOUR_ONESIGNAL_REST_API_KEY"; // ← Replace with your REST API Key in UGS Dashboard editor
+// NOTE: The real REST API key is set only in the deployed script in the UGS Dashboard.
+// This placeholder is intentional so the secret is never committed to the repo.
+// If you edit this file, re-paste the real key when deploying.
+const ONESIGNAL_API_KEY = "YOUR_ONESIGNAL_REST_API_KEY";
 
 module.exports = async ({ params, context, logger }) => {
   const originalSenderPlayerId = params.originalSenderPlayerId;
