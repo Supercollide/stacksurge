@@ -136,14 +136,22 @@ namespace StackSurge.Meta
                 if (friendIds == null || friendIds.Count == 0) return;
 
                 var friendEntries = await GetFriendsScoresAsync(LeaderboardScope.AllTime, friendIds);
+                var passed = new List<LeaderboardEntryData>();
                 foreach (var friend in friendEntries)
                 {
                     if (friend.IsCurrentPlayer || friend.Score <= 0) continue;
                     if (score <= friend.Score) continue;                          // not beaten
                     if (previousBest >= 0 && friend.Score < previousBest) continue; // were already above them
 
-                    NotificationService.Instance?.ShowBeatFriendToast(friend.PlayerName, score);
+                    passed.Add(friend);
                     _ = NotificationService.Instance?.PushFriendBeatScoreAsync(friend.PlayerId, score, "AllTime");
+                }
+
+                // One toast for the whole submit, naming the strongest friend passed.
+                if (passed.Count > 0)
+                {
+                    var names = passed.OrderByDescending(f => f.Score).Select(f => f.PlayerName).ToList();
+                    NotificationService.Instance?.ShowBeatFriendsToast(names, score);
                 }
             }
             catch (Exception ex)

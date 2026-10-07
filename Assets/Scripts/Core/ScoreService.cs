@@ -18,6 +18,7 @@ namespace StackSurge.Core
         int _comboLinks;
         float _lastClearTime = -999f;
         float _comboWindow = 3f;
+        float _survivalSeconds;
 
         public void Reset(float comboWindowSeconds)
         {
@@ -28,6 +29,7 @@ namespace StackSurge.Core
             _comboLinks = 0;
             _lastClearTime = -999f;
             _comboWindow = comboWindowSeconds;
+            _survivalSeconds = 0f;
         }
 
         public void AddDirectPoints(int points)
@@ -35,10 +37,20 @@ namespace StackSurge.Core
             TotalScore += points;
         }
 
+        /// <summary>
+        /// 10 points per whole second spent with the board over 60% full. Time is accumulated so the payout
+        /// doesn't depend on frame rate (rounding 10 * deltaTime every frame paid 0 at 20+ fps).
+        /// </summary>
         public void TickSurvivalBonus(float deltaTime, float occupancy01)
         {
             if (occupancy01 <= 0.6f) return;
-            TotalScore += Mathf.RoundToInt(10f * deltaTime);
+
+            _survivalSeconds += deltaTime;
+            if (_survivalSeconds < 1f) return;
+
+            int wholeSeconds = (int)_survivalSeconds;
+            _survivalSeconds -= wholeSeconds;
+            TotalScore += wholeSeconds * 10;
         }
 
         public void RegisterClearWave(int largestMatchSize, int tilesCleared, bool fullRowClear, bool perfectClear,

@@ -1,45 +1,17 @@
-using System;
 using System.Collections.Generic;
 using System.Text;
-using System.Threading.Tasks;
-using UnityEngine;
-using UnityEngine.Networking;
 
 namespace StackSurge.Meta
 {
     /// <summary>
     /// Configuration helper for OneSignal integration.
     /// Note: Private REST API Keys MUST NEVER be embedded in client-side game code.
-    /// Server-to-device dispatches should be triggered via UGS Cloud Code or OneSignal Dashboard.
+    /// Server-to-device dispatches go through UGS Cloud Code (see NotificationService.PushFriend*Async).
     /// </summary>
     public static class OneSignalPushHelper
     {
         // Public OneSignal App ID for StackSurge (safe to include in client builds)
         public static string AppId = "f077f714-74c3-469e-b1a0-ec993de725a9";
-
-        /// <summary>
-        /// Logs a targeted remote push notification event for client-side tracking.
-        /// </summary>
-        public static async Task<bool> SendPushToPlayerAsync(string targetPlayerId, string title, string message)
-        {
-            if (string.IsNullOrEmpty(AppId) || string.IsNullOrEmpty(targetPlayerId)) return false;
-
-            Debug.Log($"[OneSignalPushHelper] Social push targeted to player '{targetPlayerId}': {title} - {message}");
-            await Task.Yield();
-            return true;
-        }
-
-        /// <summary>
-        /// Logs a broadcast push notification event.
-        /// </summary>
-        public static async Task<bool> SendPushToAllAsync(string title, string message)
-        {
-            if (string.IsNullOrEmpty(AppId)) return false;
-
-            Debug.Log($"[OneSignalPushHelper] Broadcast push requested: {title} - {message}");
-            await Task.Yield();
-            return true;
-        }
     }
 
     /// <summary>

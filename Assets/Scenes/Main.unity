@@ -3774,7 +3774,7 @@ MonoBehaviour:
   _view: {fileID: 1382042878}
   _leaderboardManager: {fileID: 1356932688}
   _friendsManagerUI: {fileID: 1945345370}
-  _blinkTime: 1
+  _blinkTime: 0.2
 --- !u!4 &2019675946
 Transform:
   m_ObjectHideFlags: 0

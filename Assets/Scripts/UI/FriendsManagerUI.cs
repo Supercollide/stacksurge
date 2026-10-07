@@ -165,6 +165,8 @@ namespace StackSurge.UI
             }
         }
 
+        public bool IsOpen => _friendsRoot != null && _friendsRoot.activeSelf;
+
         public void TogglePanel()
         {
             if (_friendsRoot == null) return;

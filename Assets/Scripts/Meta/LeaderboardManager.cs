@@ -38,6 +38,9 @@ namespace StackSurge.Meta
 
         [Header("Assets")]
         [SerializeField] private LeaderboardRowView _rowPrefab;
+
+        /// <summary>True while the leaderboard panel is visible (used by the Android Back handler).</summary>
+        public bool IsOpen => _leaderboardRoot != null && _leaderboardRoot.activeSelf;
         [SerializeField] private Sprite _goldMedal, _silverMedal, _bronzeMedal;
 
         private Func<LeaderboardScope, Task<LeaderboardEntryData[]>> _getLeaderboardScores;

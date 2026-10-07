@@ -283,12 +283,12 @@ namespace StackSurge.Meta
                         return;
                     }
 
-                    NotificationService.Instance?.ShowIncomingFriendRequestToast(otherName);
+                    NotificationService.Instance?.ShowIncomingFriendRequestToast(otherName, otherId);
                     break;
                 }
                 case RelationshipType.Friend:
                     if (!handledLocally)
-                        NotificationService.Instance?.ShowNowFriendsToast(otherName);
+                        NotificationService.Instance?.ShowNowFriendsToast(otherName, otherId);
                     break;
             }
 
@@ -562,7 +562,7 @@ namespace StackSurge.Meta
             if (created != null && created.Type == RelationshipType.Friend)
             {
                 _locallyHandledMembers.Add(targetId);
-                NotificationService.Instance?.ShowNowFriendsToast(DisplayNameFor(created.Member));
+                NotificationService.Instance?.ShowNowFriendsToast(DisplayNameFor(created.Member), targetId);
                 _ = NotificationService.Instance?.PushFriendRequestAcceptedAsync(targetId);
             }
             else if (!string.IsNullOrEmpty(targetId))
@@ -597,7 +597,7 @@ namespace StackSurge.Meta
                     Status = PresenceStatus.Online,
                     Activity = "Just connected"
                 });
-                NotificationService.Instance?.ShowNowFriendsToast(req.PlayerName);
+                NotificationService.Instance?.ShowNowFriendsToast(req.PlayerName, req.PlayerId);
                 OnFriendsUpdated?.Invoke();
                 return true;
             }
@@ -614,7 +614,7 @@ namespace StackSurge.Meta
                 await UgsFriendsService.Instance.AddFriendAsync(requesterPlayerId);
                 Debug.Log($"[FriendsService] Friend request accepted from: {requesterPlayerId}");
 
-                NotificationService.Instance?.ShowNowFriendsToast(requesterName);
+                NotificationService.Instance?.ShowNowFriendsToast(requesterName, requesterPlayerId);
                 _ = NotificationService.Instance?.PushFriendRequestAcceptedAsync(requesterPlayerId);
 
                 await RefreshAsync(force: true);
@@ -786,7 +786,11 @@ namespace StackSurge.Meta
             }
         }
 
-        /// <summary>Reads another player's public social preferences. Defaults to permissive when unavailable.</summary>
+        /// <summary>
+        /// Reads another player's public social preferences. Defaults to permissive when unavailable.
+        /// Only successful reads are cached, so a network blip is retried next time instead of being
+        /// remembered as "allows everything".
+        /// </summary>
         public async Task<SocialPrefs> GetSocialPrefsAsync(string playerId)
         {
             if (string.IsNullOrEmpty(playerId)) return new SocialPrefs();
@@ -808,7 +812,9 @@ namespace StackSurge.Meta
             }
             catch (Exception e)
             {
+                // Not cached: the defaults are a guess, not the player's choice.
                 Debug.LogWarning($"[FriendsService] GetSocialPrefs for {playerId} failed: " + e.Message);
+                return prefs;
             }
 
             _prefsCache[playerId] = (prefs, DateTime.UtcNow);

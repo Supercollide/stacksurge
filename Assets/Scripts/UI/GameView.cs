@@ -113,6 +113,27 @@ namespace StackSurge.UI
 
         private int _lastScore = 0;
         private bool _isPaused = false;
+        private bool _helpFrozeClock;
+
+        // HUD change-gating: TMP text is only rebuilt when what it displays actually changes.
+        private int _hudTimeSeconds = -1;
+        private int _hudRiseTenths = -1;
+        private bool _hudInGrace;
+        private int _nextPreviewKind = -1;
+        private int _queuedPreviewKind = -1;
+
+        /// <summary>True while a run (not the tutorial) is in progress. Set by the game; used to freeze the clock under Help.</summary>
+        public Func<bool> IsRunActive;
+        /// <summary>Score of the run in progress, or -1 when there is no run to save. Set by the game.</summary>
+        public Func<int> GetActiveRunScore;
+        /// <summary>Raised when the player confirms ending the run from the pause menu.</summary>
+        public Action OnQuitRunConfirmed;
+
+        public bool IsPaused => _isPaused;
+        public bool IsHelpOpen => _helpPanel != null && _helpPanel.activeSelf;
+        public bool IsChallengesOpen => _challengesRoot != null && _challengesRoot.activeSelf;
+        public bool IsGameOverShowing => _gameOverRoot != null && _gameOverRoot.activeSelf;
+        public bool IsLoadingScreenActive => _loadingRoot != null && _loadingRoot.activeSelf;
 
         private Color completedColor = new(0.29f, 0.87f, 0.50f);
         private Color pendingColor = new(0.29f, 0.33f, 0.39f);
@@ -123,7 +144,10 @@ namespace StackSurge.UI
         private TextMeshProUGUI _tutorialBodyText;
         private Button _tutorialNextBtn;
         private bool _tutorialNextClicked;
-        private Button[] _colOverlayBtns;   // full-height transparent click zones
+        private Button[] _colOverlayBtns;   // full-height transparent click zones (interactable gate only)
+        private ColumnTapZone[] _colTapZones;
+        private int _tutorialHighlightedColumn = -1;
+        private RectTransform _gridMaskRt;
 
         public Action OnReplayTutorialTriggered;
         public Action OnNotificationSettingsTriggered;
@@ -193,11 +217,7 @@ namespace StackSurge.UI
                 if (_pauseMenuMainMenuButton != null)
                 {
                     _pauseMenuMainMenuButton.onClick.RemoveAllListeners();
-                    _pauseMenuMainMenuButton.onClick.AddListener(() =>
-                    {
-                        ResumeGame();
-                        _onMainMenu?.Invoke();
-                    });
+                    _pauseMenuMainMenuButton.onClick.AddListener(OnPauseMainMenuPressed);
                 }
             }
 
@@ -286,7 +306,7 @@ namespace StackSurge.UI
                 txtRt.anchorMax = Vector2.one;
                 txtRt.sizeDelta = Vector2.zero;
                 var txt = txtGo.AddComponent<TextMeshProUGUI>();
-                txt.text = "NOTIFICATIONS";
+                txt.text = "SETTINGS";
                 txt.fontSize = 24;
                 txt.fontStyle = FontStyles.Bold;
                 txt.color = Color.white;
@@ -394,7 +414,7 @@ namespace StackSurge.UI
                 txtRtNotif.sizeDelta = Vector2.zero;
 
                 var txtNotif = txtNotifGo.AddComponent<TextMeshProUGUI>();
-                txtNotif.text = "NOTIFICATIONS";
+                txtNotif.text = "SETTINGS";
                 txtNotif.fontSize = 20;
                 txtNotif.fontStyle = FontStyles.Bold;
                 txtNotif.color = Color.white;
@@ -444,6 +464,7 @@ namespace StackSurge.UI
 
             // VIBRATION TOGGLE  — assign _mainMenuVibrationToggle in the Inspector
             _vibrationEnabled = PlayerPrefs.GetInt("VibrationEnabled", 1) == 1;
+            Haptics.Enabled = _vibrationEnabled;
             if (_mainMenuVibrationToggle != null)
             {
                 // Set without firing the callback first
@@ -452,6 +473,7 @@ namespace StackSurge.UI
                 _mainMenuVibrationToggle.onValueChanged.AddListener(isOn =>
                 {
                     _vibrationEnabled = isOn;
+                    Haptics.Enabled = isOn;
                     PlayerPrefs.SetInt("VibrationEnabled", _vibrationEnabled ? 1 : 0);
                     PlayerPrefs.Save();
                 });
@@ -475,6 +497,8 @@ namespace StackSurge.UI
             // Name input – submit on keyboard confirm as well
             if (_mainMenuNameInput != null)
             {
+                // The game rejects names over 20 characters; stop the field at 20 instead of silently ignoring the save.
+                _mainMenuNameInput.characterLimit = 20;
                 _mainMenuNameInput.onSubmit.RemoveAllListeners();
                 _mainMenuNameInput.onSubmit.AddListener(val =>
                 {
@@ -535,25 +559,45 @@ namespace StackSurge.UI
         }
         // ────────────────────────────────────────────────────────────────────
 
-        public void UpdateHud(int score, string timeStr, string riseLine, float wildChance, TileKind current, TileKind next)
+        /// <summary>
+        /// Called every frame during a run. Text and previews are only touched when the displayed value changes,
+        /// so the HUD doesn't allocate strings or rebuild TMP meshes every frame.
+        /// </summary>
+        public void UpdateHud(int score, float timeAlive, float riseSeconds, bool inGrace, TileKind current, TileKind next)
         {
             if (_scoreText == null) return;
 
             if (score != _lastScore)
             {
                 _scoreText.text = FormatScore(score);
-                _scoreText.transform.DOKill();
-                _scoreText.transform.localScale = Vector3.one;
-                _scoreText.transform.DOPunchScale(Vector3.one * 0.15f, 0.3f, 10, 1f);
+                // Punch only for real gains; the +10/s survival trickle shouldn't wobble the score every second.
+                if (score - _lastScore >= 50)
+                {
+                    _scoreText.transform.DOKill();
+                    _scoreText.transform.localScale = Vector3.one;
+                    _scoreText.transform.DOPunchScale(Vector3.one * 0.15f, 0.3f, 10, 1f);
+                }
                 _lastScore = score;
             }
 
-            _hudText.text =
-                $"Time: <color=#A0A0A0>{timeStr}</color>\n" +
-                $"<color=#60A5FA>{riseLine}</color>";
+            int timeSeconds = (int)timeAlive;
+            int riseTenths = Mathf.RoundToInt(riseSeconds * 10f);
+            if (_hudText != null && (timeSeconds != _hudTimeSeconds || riseTenths != _hudRiseTenths || inGrace != _hudInGrace))
+            {
+                _hudTimeSeconds = timeSeconds;
+                _hudRiseTenths = riseTenths;
+                _hudInGrace = inGrace;
 
-            UpdatePreviewSquare(_nextPreviewImg, _nextInnerIcon, current);
-            UpdatePreviewSquare(_queuedPreviewImg, _queuedInnerIcon, next);
+                string riseLine = inGrace
+                    ? $"Auto-rise starts in: {riseTenths / 10f:0.0}s"
+                    : $"Next auto-rise: {riseTenths / 10f:0.0}s";
+                _hudText.text =
+                    $"Time: <color=#A0A0A0>{timeSeconds / 60:00}:{timeSeconds % 60:00}</color>\n" +
+                    $"<color=#60A5FA>{riseLine}</color>";
+            }
+
+            UpdatePreviewSquare(_nextPreviewImg, _nextInnerIcon, current, ref _nextPreviewKind);
+            UpdatePreviewSquare(_queuedPreviewImg, _queuedInnerIcon, next, ref _queuedPreviewKind);
         }
 
         private string FormatScore(int score)
@@ -568,14 +612,18 @@ namespace StackSurge.UI
             else PauseGame();
         }
 
+        /// <summary>Safe to call when already paused (e.g. focus loss right after the player paused).</summary>
         public void PauseGame()
         {
+            if (_isPaused) return;
             if (_pauseMenuRoot != null)
             {
                 _pauseMenuRoot.SetActive(true);
                 var cg = _pauseMenuRoot.GetComponent<CanvasGroup>();
                 if (cg != null)
                 {
+                    cg.DOKill();
+                    cg.blocksRaycasts = true;
                     cg.alpha = 0f;
                     cg.DOFade(1f, 0.2f).SetUpdate(true);
                 }
@@ -586,11 +634,15 @@ namespace StackSurge.UI
 
         public void ResumeGame()
         {
+            HideConfirmDialog();
             if (_pauseMenuRoot != null)
             {
                 var cg = _pauseMenuRoot.GetComponent<CanvasGroup>();
                 if (cg != null)
                 {
+                    // Stop catching taps as soon as the fade starts, so the first tap after Resume reaches the board.
+                    cg.DOKill();
+                    cg.blocksRaycasts = false;
                     cg.DOFade(0f, 0.2f).SetUpdate(true).OnComplete(() => _pauseMenuRoot.SetActive(false));
                 }
                 else
@@ -602,9 +654,34 @@ namespace StackSurge.UI
             Time.timeScale = 1f;
         }
 
-        private void UpdatePreviewSquare(Image img, Image innerIcon, TileKind k)
+        void OnPauseMainMenuPressed()
+        {
+            int score = GetActiveRunScore != null ? GetActiveRunScore() : -1;
+            if (score < 0)
+            {
+                ResumeGame();
+                _onMainMenu?.Invoke();
+                return;
+            }
+
+            ShowConfirmDialog(
+                "End this run?",
+                $"Your score of {FormatScore(score)} will be saved.",
+                "END RUN",
+                "CANCEL",
+                onConfirm: () =>
+                {
+                    ResumeGame();
+                    OnQuitRunConfirmed?.Invoke();
+                });
+        }
+
+        /// <param name="lastKind">Kind currently shown in this slot (-1 = nothing yet); only redraws on change.</param>
+        private void UpdatePreviewSquare(Image img, Image innerIcon, TileKind k, ref int lastKind)
         {
             if (img == null || innerIcon == null) return;
+            if (lastKind == (int)k) return;
+            lastKind = (int)k;
 
             img.color = ColorFor(k);
 
@@ -615,7 +692,8 @@ namespace StackSurge.UI
                 innerIcon.color = new Color(0.0f, 0.0f, 0.0f);
                 innerIcon.enabled = true;
                 img.transform.DOKill();
-                img.transform.DOScale(1.1f, 0.5f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine);
+                img.transform.localScale = Vector3.one;
+                img.transform.DOScale(1.1f, 0.5f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetLink(img.gameObject);
             }
             else if (k == TileKind.Bomb)
             {
@@ -633,21 +711,29 @@ namespace StackSurge.UI
             }
         }
 
-        public void ShowGameOver(int score, int dailyBest, int allTimeHigh, int streak)
+        public void ShowGameOver(int score, int dailyBest, int allTimeHigh, int streak, bool isNewBest = false)
         {
+            ClearTransientUi();
             _hudRoot.SetActive(false);
 
-            _gameOverScore.text = $"Score: <size=120%>{FormatScore(score)}</size>\n\n" +
+            string header = isNewBest ? "<color=#FACC15><b>NEW BEST!</b></color>\n" : string.Empty;
+            _gameOverScore.text = header +
+                                  $"Score: <size=120%>{FormatScore(score)}</size>\n\n" +
                                   $"Daily Best: {FormatScore(dailyBest)}\n" +
                                   $"All-time: {FormatScore(allTimeHigh)}\n" +
                                   $"Streak: {streak} {(streak == 1 ? "day" : "days")}";
 
             _gameOverRoot.SetActive(true);
             var cg = _gameOverRoot.GetComponent<CanvasGroup>();
+            cg.DOKill();
             cg.alpha = 0;
-            cg.DOFade(1f, 0.4f);
+            cg.DOFade(1f, 0.4f).SetUpdate(true);
+            // Taps already in flight when the board filled must not land on RETRY / MAIN MENU.
+            cg.interactable = false;
+            DOVirtual.DelayedCall(0.5f, () => cg.interactable = true, ignoreTimeScale: true).SetLink(_gameOverRoot);
+            _gameOverRoot.transform.DOKill();
             _gameOverRoot.transform.localScale = Vector3.one * 0.9f;
-            _gameOverRoot.transform.DOScale(1f, 0.4f).SetEase(Ease.OutBack);
+            _gameOverRoot.transform.DOScale(1f, 0.4f).SetEase(Ease.OutBack).SetUpdate(true);
         }
 
         public void HideGameOver()
@@ -661,9 +747,12 @@ namespace StackSurge.UI
 
         public void ShowMainMenu(bool animate = true)
         {
+            ClearTransientUi();
+            HideConfirmDialog();
             if (_hudRoot != null) _hudRoot.SetActive(false);
             if (_gameOverRoot != null) _gameOverRoot.SetActive(false);
             if (_helpPanel != null) _helpPanel.SetActive(false);
+            _helpFrozeClock = false;
             if (_challengesRoot != null) _challengesRoot.SetActive(false);
 
             if (_mainMenuRoot != null)
@@ -672,6 +761,11 @@ namespace StackSurge.UI
                 RefreshMainMenuStats();
 
                 var cg = _mainMenuRoot.GetComponent<CanvasGroup>();
+                if (cg != null)
+                {
+                    cg.DOKill();
+                    cg.blocksRaycasts = true;
+                }
                 if (animate)
                 {
                     if (cg != null)
@@ -698,6 +792,9 @@ namespace StackSurge.UI
                 var cg = _mainMenuRoot.GetComponent<CanvasGroup>();
                 if (cg != null)
                 {
+                    // Let taps through to the board as soon as the fade starts.
+                    cg.DOKill();
+                    cg.blocksRaycasts = false;
                     cg.DOFade(0f, 0.3f).SetUpdate(true).OnComplete(() => _mainMenuRoot.SetActive(false));
                 }
                 else
@@ -734,9 +831,26 @@ namespace StackSurge.UI
             }
         }
 
+        /// <summary>
+        /// Opening Help mid-run freezes the clock (same rule as the leaderboard and friends panels: only if it was
+        /// running, and closing never unpauses a paused game).
+        /// </summary>
         public void ToggleHelp()
         {
-            if (_helpPanel != null) _helpPanel.SetActive(!_helpPanel.activeSelf);
+            if (_helpPanel == null) return;
+            bool open = !_helpPanel.activeSelf;
+            _helpPanel.SetActive(open);
+
+            if (open)
+            {
+                _helpFrozeClock = IsRunActive != null && IsRunActive() && Time.timeScale > 0f;
+                if (_helpFrozeClock) Time.timeScale = 0f;
+            }
+            else if (_helpFrozeClock)
+            {
+                _helpFrozeClock = false;
+                if (!_isPaused) Time.timeScale = 1f;
+            }
         }
 
         public void ToggleChallenges()
@@ -873,7 +987,7 @@ namespace StackSurge.UI
                                         _onClaimReward?.Invoke(index);
                                         PopulateChallenges();
                                     });
-                                    rowView.ClaimButton.transform.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true);
+                                    rowView.ClaimButton.transform.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true).SetLink(rowView.ClaimButton.gameObject);
                                 }
                                 if (rowView.RewardText != null) rowView.RewardText.gameObject.SetActive(false);
                             }
@@ -919,12 +1033,14 @@ namespace StackSurge.UI
                     statusRt.anchorMin = new Vector2(0, 0.5f);
                     statusRt.anchorMax = new Vector2(0, 0.5f);
                     statusRt.pivot = new Vector2(0, 0.5f);
-                    statusRt.anchoredPosition = new Vector2(20, 0);
-                    statusRt.sizeDelta = new Vector2(50, 80);
-                    var statusText = statusGo.AddComponent<TextMeshProUGUI>();
-                    statusText.text = item.Completed ? "<color=#4ADE80>✓</color>" : "<color=#4B5563>○</color>";
-                    statusText.fontSize = 32;
-                    statusText.alignment = TextAlignmentOptions.Center;
+                    statusRt.anchoredPosition = new Vector2(32, 0);
+                    statusRt.sizeDelta = new Vector2(28, 28);
+                    // The TMP fonts have no ✓/○ glyphs (they render as boxes), so use the status sprites or a plain chip.
+                    var statusImg = statusGo.AddComponent<Image>();
+                    statusImg.sprite = item.Completed ? completedIcon : pendingIcon;
+                    statusImg.preserveAspect = true;
+                    statusImg.color = item.Completed ? completedColor : pendingColor;
+                    statusImg.raycastTarget = false;
 
                     var textColGo = new GameObject("TextColumn");
                     textColGo.transform.SetParent(rowGo.transform, false);
@@ -1057,7 +1173,7 @@ namespace StackSurge.UI
                             btnText.alignment = TextAlignmentOptions.Center;
                             btnText.color = Color.black;
 
-                            claimBtnRt.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true);
+                            claimBtnRt.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true).SetLink(claimBtnGo);
                         }
                     }
                     else
@@ -1086,6 +1202,30 @@ namespace StackSurge.UI
             }
         }
 
+        /// <summary>
+        /// Puts every tile back at rest: kills in-flight blink/fall/slide/shake tweens and transient overlays.
+        /// Used when a run starts so animations from an interrupted run can't keep moving the new board.
+        /// </summary>
+        public void ResetBoardVisuals()
+        {
+            if (_shake != null) _shake.StopShake();
+            if (_gridRoot != null)
+            {
+                _gridRoot.DOKill();
+                _gridRoot.anchoredPosition = Vector2.zero;
+            }
+            if (_cellImages != null)
+            {
+                foreach (var img in _cellImages)
+                {
+                    if (img == null) continue;
+                    img.DOKill();
+                    img.rectTransform.DOKill();
+                }
+            }
+            ClearTransientUi();
+        }
+
         public void RefreshGrid(TileKind[,] cells)
         {
             float cw = 720f / _settings.Columns;
@@ -1104,11 +1244,50 @@ namespace StackSurge.UI
 
         public void TriggerClearShake(int tileCount)
         {
-#if UNITY_ANDROID || UNITY_IOS
-            if (_vibrationEnabled) Handheld.Vibrate();
-#endif
+            if (tileCount >= 5) Haptics.Medium();
+            else Haptics.Light();
+
             float shake = _settings.ShakeBase + Mathf.Max(0, tileCount - 4) * _settings.ShakePerExtraTile;
-            _shake.AddShake(shake, 0.12f);
+            if (_shake != null) _shake.AddShake(shake, 0.12f);
+        }
+
+        /// <summary>
+        /// Feedback for a refused column tap (full column, or the wrong column during the tutorial):
+        /// red flash, a sideways nudge of that column's tiles and a light haptic tick.
+        /// </summary>
+        /// <param name="nudgeTiles">False in the tutorial, where the column can be mid-clear: completing its tile
+        /// tweens early would make matched tiles vanish before the blink ends.</param>
+        public void RejectColumnTap(int col, bool nudgeTiles = true)
+        {
+            if (_colTapZones == null || col < 0 || col >= _colTapZones.Length) return;
+            if (_colTapZones[col] != null) _colTapZones[col].FlashReject();
+            Haptics.Light();
+            if (!nudgeTiles) return;
+
+            for (int r = 0; r < _settings.Rows; r++)
+            {
+                var rt = _cellImages[r, col].rectTransform;
+                rt.DOKill(true);
+                rt.DOPunchAnchorPos(new Vector2(10f, 0f), 0.25f, 12, 0.5f).SetUpdate(true);
+            }
+        }
+
+        const string TutorialArrowPunchId = "TutorialArrowPunch";
+
+        void OnColumnTapRejected(int col)
+        {
+            // Columns are only locked during the tutorial: point at the column the tutorial wants.
+            if (_tutorialHighlightedColumn < 0 || col == _tutorialHighlightedColumn) return;
+            RejectColumnTap(col, nudgeTiles: false);
+
+            var arrow = _colOverlayBtns[_tutorialHighlightedColumn].transform.Find("TutorialArrow");
+            if (arrow != null)
+            {
+                // Only kill the previous punch (by id), not the arrow's looping bob on the same transform.
+                DOTween.Kill(TutorialArrowPunchId);
+                arrow.localScale = Vector3.one;
+                arrow.DOPunchScale(Vector3.one * 0.4f, 0.35f, 6, 0.5f).SetUpdate(true).SetId(TutorialArrowPunchId).SetLink(arrow.gameObject);
+            }
         }
 
         // ── Reward Toast / Badge ──────────────────────────────────────────────
@@ -1125,7 +1304,22 @@ namespace StackSurge.UI
             _toastParent.anchorMax = Vector2.one;
             _toastParent.offsetMin = Vector2.zero;
             _toastParent.offsetMax = Vector2.zero;
+
+            // Toasts and badges float over the top rows of the board; they must never swallow column taps.
+            var layerGroup = go.AddComponent<CanvasGroup>();
+            layerGroup.blocksRaycasts = false;
+            layerGroup.interactable = false;
             return _toastParent;
+        }
+
+        /// <summary>Removes reward toasts and the slow-rise badge (run ended, menu shown, new run).</summary>
+        void ClearTransientUi()
+        {
+            if (_slowRiseExpireCoroutine != null) { StopCoroutine(_slowRiseExpireCoroutine); _slowRiseExpireCoroutine = null; }
+            if (_slowRiseBadgeGo != null) { Destroy(_slowRiseBadgeGo); _slowRiseBadgeGo = null; }
+            if (_toastParent == null) return;
+            for (int i = _toastParent.childCount - 1; i >= 0; i--)
+                Destroy(_toastParent.GetChild(i).gameObject);
         }
 
         /// <summary>
@@ -1172,6 +1366,7 @@ namespace StackSurge.UI
             txt.color = accent;
             txt.alignment = TextAlignmentOptions.Center;
             txt.enableAutoSizing = false;
+            txt.raycastTarget = false;
             var trt = textGo.GetComponent<RectTransform>();
             trt.anchorMin = Vector2.zero;
             trt.anchorMax = Vector2.one;
@@ -1188,6 +1383,7 @@ namespace StackSurge.UI
                 subTxt.fontSize = 30;
                 subTxt.color = new Color(accent.r, accent.g, accent.b, 0.85f);
                 subTxt.alignment = TextAlignmentOptions.Center;
+                subTxt.raycastTarget = false;
                 var srt = subGo.GetComponent<RectTransform>();
                 srt.anchorMin = new Vector2(0f, -0.6f);
                 srt.anchorMax = new Vector2(1f, -0.6f);
@@ -1200,25 +1396,23 @@ namespace StackSurge.UI
 
             float totalDuration = style == RewardToastStyle.PerfectClear ? 2.2f : 1.6f;
 
-            // Fade in fast, hold, fade out
-            var seq = DOTween.Sequence().SetUpdate(true);
-            seq.Append(cg.DOFade(1f, 0.18f).SetUpdate(true));
+            // Fade in fast, hold, fade out; float upward over the whole sequence so nothing outlives the
+            // Destroy (a separate float tween used to tick on a destroyed object and log a safe-mode warning).
+            var seq = DOTween.Sequence().SetUpdate(true).SetLink(go);
+            seq.Append(cg.DOFade(1f, 0.18f));
             seq.AppendInterval(totalDuration - 0.55f);
-            seq.Append(cg.DOFade(0f, 0.35f).SetUpdate(true));
+            seq.Append(cg.DOFade(0f, 0.35f));
+            seq.Insert(0f, rt.DOAnchorPosY(rt.anchoredPosition.y + 120f, totalDuration - 0.02f).SetEase(Ease.OutCubic));
             seq.OnComplete(() => { if (go != null) Destroy(go); });
-
-            // Float upward
-            rt.DOAnchorPosY(rt.anchoredPosition.y + 120f, totalDuration + 0.05f)
-              .SetEase(Ease.OutCubic).SetUpdate(true);
 
             // Scale punch on appear
             go.transform.localScale = Vector3.one * 0.5f;
-            go.transform.DOScale(1f, 0.22f).SetEase(Ease.OutBack).SetUpdate(true);
+            go.transform.DOScale(1f, 0.22f).SetEase(Ease.OutBack).SetUpdate(true).SetLink(go);
 
             // Combo gets a continuous pulse
             if (style == RewardToastStyle.Combo)
                 txt.transform.DOScale(1.06f, 0.25f).SetLoops(4, LoopType.Yoyo)
-                   .SetEase(Ease.InOutSine).SetUpdate(true);
+                   .SetEase(Ease.InOutSine).SetUpdate(true).SetLink(go);
 
             // Perfect clear gets a shimmer outline
             if (style == RewardToastStyle.PerfectClear)
@@ -1253,13 +1447,14 @@ namespace StackSurge.UI
             var cg = go.GetComponent<CanvasGroup>();
             if (cg == null) cg = go.AddComponent<CanvasGroup>();
             cg.alpha = 0f;
-            cg.DOFade(1f, 0.3f).SetUpdate(true);
+            cg.DOFade(1f, 0.3f).SetUpdate(true).SetLink(go);
             go.transform.localScale = Vector3.one * 0.8f;
-            go.transform.DOScale(1f, 0.3f).SetEase(Ease.OutBack).SetUpdate(true);
 
-            // Gentle continuous pulse to stay visible
-            go.transform.DOScale(1.04f, 0.7f).SetLoops(-1, LoopType.Yoyo)
-              .SetEase(Ease.InOutSine).SetUpdate(true);
+            // Pop in, then a gentle continuous pulse to stay visible. Chained so the two scale tweens don't fight
+            // (infinite loops can't live inside a Sequence, so the pulse starts from OnComplete).
+            go.transform.DOScale(1f, 0.3f).SetEase(Ease.OutBack).SetUpdate(true).SetLink(go)
+                .OnComplete(() => go.transform.DOScale(1.04f, 0.7f).SetLoops(-1, LoopType.Yoyo)
+                    .SetEase(Ease.InOutSine).SetUpdate(true).SetLink(go));
 
             // Auto-expire
             _slowRiseExpireCoroutine = StartCoroutine(ExpireSlowRiseBadge(go, cg, durationSeconds));
@@ -1268,11 +1463,12 @@ namespace StackSurge.UI
         IEnumerator ExpireSlowRiseBadge(GameObject badge, CanvasGroup cg, float delay)
         {
             yield return new WaitForSeconds(delay - 0.5f);
+            _slowRiseExpireCoroutine = null;
             if (badge == null) yield break;
-            cg.DOFade(0f, 0.5f).SetUpdate(true).OnComplete(() =>
+            cg.DOFade(0f, 0.5f).SetUpdate(true).SetLink(badge).OnComplete(() =>
             {
                 if (badge != null) Destroy(badge);
-                _slowRiseBadgeGo = null;
+                if (_slowRiseBadgeGo == badge) _slowRiseBadgeGo = null;
             });
         }
         // ─────────────────────────────────────────────────────────────────────
@@ -1283,7 +1479,8 @@ namespace StackSurge.UI
             {
                 var img = _cellImages[m.r, m.c];
                 img.DOColor(Color.white, blinkTime * 0.5f).SetLoops(2, LoopType.Yoyo);
-                img.rectTransform.DOScale(0f, blinkTime).SetEase(Ease.InExpo);
+                // InQuad (not InExpo) so the tiles visibly shrink for the whole blink instead of holding still.
+                img.rectTransform.DOScale(0f, blinkTime).SetEase(Ease.InQuad);
             }
             yield return new WaitForSeconds(blinkTime);
         }
@@ -1300,36 +1497,52 @@ namespace StackSurge.UI
                     int rr = startRow + dr;
                     if (cc < 0 || cc >= W || rr < 0 || rr >= H) continue;
                     if (boardCells[rr, cc] == TileKind.Empty) continue;
-                    _cellImages[rr, cc].DOColor(Color.white, 0.05f).SetLoops((int)(blinkTime / 0.05f), LoopType.Yoyo);
+                    // Even loop count so a Yoyo ends on the tile colour, not white.
+                    int loops = Mathf.Max(2, Mathf.RoundToInt(blinkTime / 0.05f) & ~1);
+                    _cellImages[rr, cc].DOColor(Color.white, blinkTime / loops).SetLoops(loops, LoopType.Yoyo);
                 }
             yield return new WaitForSeconds(blinkTime);
         }
 
+        // Falls scale with distance but stay short: every frame spent here is a frame the board ignores taps.
+        const float FallBaseSeconds = 0.08f;
+        const float FallPerCellSeconds = 0.035f;
+        const float FallMaxSeconds = 0.22f;
+
         public IEnumerator AnimateGravityCoroutine(int[,] fallDistances)
         {
-            bool anyFalls = false;
-            float maxFallTime = 0.4f;
+            float longestFall = 0f;
             float cw = 720f / _settings.Columns;
             float cellH = 920f / _settings.Rows;
 
             for (int r = 0; r < _settings.Rows; r++)
                 for (int c = 0; c < _settings.Columns; c++)
                 {
-                    if (fallDistances[r, c] > 0)
+                    int dist = fallDistances[r, c];
+                    if (dist > 0)
                     {
-                        anyFalls = true;
+                        float dur = Mathf.Min(FallBaseSeconds + FallPerCellSeconds * dist, FallMaxSeconds);
+                        longestFall = Mathf.Max(longestFall, dur);
                         float startY = r * cellH + 4f;
-                        float endY = (r - fallDistances[r, c]) * cellH + 4f;
-                        _cellImages[r, c].rectTransform.anchoredPosition = new Vector2(c * cw + 4f, startY);
-                        _cellImages[r, c].rectTransform.DOAnchorPosY(endY, maxFallTime).SetEase(Ease.OutBounce);
+                        float endY = (r - dist) * cellH + 4f;
+                        var rt = _cellImages[r, c].rectTransform;
+                        rt.DOKill(true); // finish any reject nudge first so it can't fight the fall
+                        rt.anchoredPosition = new Vector2(c * cw + 4f, startY);
+                        rt.DOAnchorPosY(endY, dur).SetEase(Ease.OutQuad);
                     }
                 }
 
-            if (anyFalls) yield return new WaitForSeconds(maxFallTime);
+            // Wait exactly as long as the longest fall, so the snap below never cuts a running tween short.
+            if (longestFall > 0f) yield return new WaitForSeconds(longestFall);
 
             for (int r = 0; r < _settings.Rows; r++)
                 for (int c = 0; c < _settings.Columns; c++)
-                    _cellImages[r, c].rectTransform.anchoredPosition = new Vector2(c * cw + 4f, r * cellH + 4f);
+                {
+                    var rt = _cellImages[r, c].rectTransform;
+                    // A fall can still have one tick left; kill it so it can't move the tile after the snap.
+                    if (fallDistances[r, c] > 0) rt.DOKill();
+                    rt.anchoredPosition = new Vector2(c * cw + 4f, r * cellH + 4f);
+                }
         }
 
         public IEnumerator SlideGridUpCoroutine(float slideTime)
@@ -1360,10 +1573,12 @@ namespace StackSurge.UI
             if (es == null)
             {
                 var go = new GameObject("EventSystem");
-                go.AddComponent<EventSystem>();
+                es = go.AddComponent<EventSystem>();
                 go.AddComponent<InputSystemUIInputModule>();
+                ApplyDragThreshold(es);
                 return;
             }
+            ApplyDragThreshold(es);
 
             var standalone = es.GetComponent<StandaloneInputModule>();
             if (standalone != null)
@@ -1376,13 +1591,24 @@ namespace StackSurge.UI
                 es.gameObject.AddComponent<InputSystemUIInputModule>();
         }
 
+        /// <summary>
+        /// A fixed 10 px drag threshold is under 1 mm on a 450 dpi phone, so a slightly moving finger turns a tap on a
+        /// list button into a scroll. Scale it to ~1.5 mm of physical distance.
+        /// </summary>
+        static void ApplyDragThreshold(EventSystem es)
+        {
+            float dpi = Screen.dpi;
+            if (dpi <= 0f) return; // unknown: keep the scene value
+            es.pixelDragThreshold = Mathf.Clamp(Mathf.RoundToInt(dpi * 0.06f), 10, 60);
+        }
+
         void BuildUi()
         {
             if (_mainCanvas != null)
             {
                 _shake = _mainCanvas.gameObject.GetComponent<ScreenShake>();
                 if (_shake == null) _shake = _mainCanvas.gameObject.AddComponent<ScreenShake>();
-                _shake.Target = _mainCanvas.transform;
+                // Target is set to the board (GridMask) below; shaking the root canvas does nothing.
             }
 
             if (_hudRoot != null) _hudRoot.SetActive(false);
@@ -1397,7 +1623,10 @@ namespace StackSurge.UI
             maskRt.anchoredPosition = new Vector2(0, -120);
             var maskImg = gridMaskGo.AddComponent<Image>();
             maskImg.color = new Color(0.15f, 0.15f, 0.2f, 1f);
+            maskImg.raycastTarget = false; // only the column zones need to receive touches
             gridMaskGo.AddComponent<UnityEngine.UI.Mask>().showMaskGraphic = true;
+            _gridMaskRt = maskRt;
+            if (_shake != null) _shake.Target = maskRt;
 
             var gridGo = new GameObject("Grid");
             gridGo.transform.SetParent(gridMaskGo.transform, false);
@@ -1421,13 +1650,14 @@ namespace StackSurge.UI
                     rt.anchoredPosition = new Vector2(c * cw + 4f, r * cellH + 4f);
                     var img = cell.AddComponent<Image>();
                     img.color = ColorFor(TileKind.Empty);
+                    img.raycastTarget = false; // 63 tiles under the column zones; skip them in every raycast
                     _cellImages[r, c] = img;
                 }
 
             _colOverlayBtns = new Button[_settings.Columns];
+            _colTapZones = new ColumnTapZone[_settings.Columns];
             for (int c = 0; c < _settings.Columns; c++)
             {
-                int col = c;
                 var colOverlay = new GameObject($"ColOverlay_{c}");
                 colOverlay.transform.SetParent(_gridRoot, false);
                 var rt = colOverlay.AddComponent<RectTransform>();
@@ -1440,20 +1670,35 @@ namespace StackSurge.UI
                 var img = colOverlay.AddComponent<Image>();
                 img.color = new Color(1f, 1f, 1f, 0f);
 
+                // The Button is only an interactable gate (tutorial locking). Taps are delivered on pointer DOWN by
+                // ColumnTapZone; there is deliberately no onClick listener, so each tap fires exactly once.
                 var btn = colOverlay.AddComponent<Button>();
-                btn.onClick.AddListener(() => _onColumnClicked?.Invoke(col));
-                btn.transition = Selectable.Transition.ColorTint;
+                btn.transition = Selectable.Transition.None;
                 btn.targetGraphic = img;
+                var nav = btn.navigation;
+                nav.mode = Navigation.Mode.None;
+                btn.navigation = nav;
 
-                var colors = btn.colors;
-                colors.normalColor = new Color(1f, 1f, 1f, 0f);
-                colors.highlightedColor = new Color(1f, 1f, 1f, 0.05f);
-                colors.pressedColor = new Color(1f, 1f, 1f, 0.15f);
-                colors.selectedColor = new Color(1f, 1f, 1f, 0f);
-                colors.disabledColor = new Color(1f, 1f, 1f, 0f);
-                btn.colors = colors;
+                // Press flash: visible feedback the moment the finger lands.
+                var flashGo = new GameObject("PressFlash");
+                flashGo.transform.SetParent(colOverlay.transform, false);
+                var flashRt = flashGo.AddComponent<RectTransform>();
+                flashRt.anchorMin = Vector2.zero;
+                flashRt.anchorMax = Vector2.one;
+                flashRt.offsetMin = flashRt.offsetMax = Vector2.zero;
+                var flashImg = flashGo.AddComponent<Image>();
+                flashImg.color = new Color(1f, 1f, 1f, 0f);
+                flashImg.raycastTarget = false;
+
+                var zone = colOverlay.AddComponent<ColumnTapZone>();
+                zone.Column = c;
+                zone.Gate = btn;
+                zone.Flash = flashImg;
+                zone.OnTap = col => _onColumnClicked?.Invoke(col);
+                zone.OnRejected = OnColumnTapRejected;
 
                 _colOverlayBtns[c] = btn;   // store so tutorial can lock it
+                _colTapZones[c] = zone;
             }
 
             /*
@@ -1647,6 +1892,8 @@ namespace StackSurge.UI
             var cg = _loadingRoot.GetComponent<CanvasGroup>();
             if (cg != null) cg.alpha = 1f;
 
+            StartCoroutine(WarmUpFontsCoroutine());
+
             var startBtn = _loadingRoot.GetComponent<Button>();
             if (startBtn != null)
             {
@@ -1688,9 +1935,46 @@ namespace StackSurge.UI
             var cg = _loadingRoot.GetComponent<CanvasGroup>();
             cg.DOFade(0, duration).SetEase(Ease.InOutQuad).SetUpdate(true).OnComplete(() =>
             {
+                StopLoadingScreenTweens();
                 _loadingRoot.SetActive(false);
                 OnLoadingDone?.Invoke();
             });
+        }
+
+        /// <summary>The loading screen's infinite pulse/glow loops would otherwise keep running for the whole session.</summary>
+        void StopLoadingScreenTweens()
+        {
+            if (_loadingTitleText != null) _loadingTitleText.transform.DOKill();
+            if (_loadingGlows == null) return;
+            foreach (var glow in _loadingGlows)
+            {
+                if (glow == null) continue;
+                glow.DOKill();                 // alpha loop (targets the Image)
+                glow.rectTransform.DOKill();   // scale loop (targets the transform)
+            }
+        }
+
+        // Printable ASCII plus the few symbols the UI uses. Both TMP fonts are dynamic and start empty in builds,
+        // so without this every first use of a glyph renders it into the atlas mid-game (a visible hitch).
+        const string WarmupCharacters =
+            " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~—–…×▼•·";
+
+        IEnumerator WarmUpFontsCoroutine()
+        {
+            yield return null; // let the loading screen draw first
+
+            var fonts = new HashSet<TMP_FontAsset>();
+            if (TMP_Settings.defaultFontAsset != null) fonts.Add(TMP_Settings.defaultFontAsset);
+            var root = _mainCanvas != null ? _mainCanvas.transform : transform;
+            foreach (var text in root.GetComponentsInChildren<TMP_Text>(true))
+                if (text.font != null) fonts.Add(text.font);
+
+            foreach (var font in fonts)
+            {
+                if (font.atlasPopulationMode != AtlasPopulationMode.Dynamic) continue;
+                font.TryAddCharacters(WarmupCharacters);
+                yield return null; // spread the work over frames
+            }
         }
 
         // ── Tutorial Controller Extensions ───────────────────────────────────
@@ -1860,9 +2144,107 @@ namespace StackSurge.UI
             if (_tutorialDialogGo != null) _tutorialDialogGo.SetActive(false);
         }
 
+        // ── Confirm Dialog ───────────────────────────────────────────────────
+        GameObject _confirmDialogGo;
+        TextMeshProUGUI _confirmTitleText;
+        TextMeshProUGUI _confirmBodyText;
+        TextMeshProUGUI _confirmYesText;
+        TextMeshProUGUI _confirmNoText;
+        Action _confirmOnYes;
+
+        public bool IsConfirmDialogOpen => _confirmDialogGo != null && _confirmDialogGo.activeSelf;
+
+        /// <summary>Modal yes/no dialog over everything else (works while paused). Back / "No" just closes it.</summary>
+        public void ShowConfirmDialog(string title, string body, string confirmLabel, string cancelLabel, Action onConfirm)
+        {
+            if (_confirmDialogGo == null) BuildConfirmDialog();
+
+            _confirmTitleText.text = title;
+            _confirmBodyText.text = body;
+            _confirmYesText.text = confirmLabel;
+            _confirmNoText.text = cancelLabel;
+            _confirmOnYes = onConfirm;
+
+            _confirmDialogGo.SetActive(true);
+            _confirmDialogGo.transform.SetAsLastSibling();
+            var panel = _confirmDialogGo.transform.GetChild(0);
+            panel.DOKill();
+            panel.localScale = Vector3.one * 0.9f;
+            panel.DOScale(1f, 0.2f).SetEase(Ease.OutBack).SetUpdate(true);
+        }
+
+        public void HideConfirmDialog()
+        {
+            _confirmOnYes = null;
+            if (_confirmDialogGo != null) _confirmDialogGo.SetActive(false);
+        }
+
+        void BuildConfirmDialog()
+        {
+            _confirmDialogGo = new GameObject("ConfirmDialog");
+            _confirmDialogGo.transform.SetParent(_mainCanvas != null ? _mainCanvas.transform : transform, false);
+            var rootRt = _confirmDialogGo.AddComponent<RectTransform>();
+            rootRt.anchorMin = Vector2.zero;
+            rootRt.anchorMax = Vector2.one;
+            rootRt.offsetMin = rootRt.offsetMax = Vector2.zero;
+            _confirmDialogGo.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f); // dim + blocks taps behind
+
+            var panelGo = new GameObject("Panel");
+            panelGo.transform.SetParent(_confirmDialogGo.transform, false);
+            var panelRt = panelGo.AddComponent<RectTransform>();
+            panelRt.anchorMin = panelRt.anchorMax = new Vector2(0.5f, 0.5f);
+            panelRt.sizeDelta = new Vector2(760f, 400f);
+            panelGo.AddComponent<Image>().color = new Color(0.06f, 0.06f, 0.08f, 0.98f);
+
+            _confirmTitleText = CreateTmp(panelGo.transform, "Title", 42, FontStyles.Bold, TextAlignmentOptions.Center);
+            var titleRt = _confirmTitleText.rectTransform;
+            titleRt.anchoredPosition = new Vector2(0f, -40f);
+            titleRt.sizeDelta = new Vector2(-60f, 60f);
+
+            _confirmBodyText = CreateTmp(panelGo.transform, "Body", 30, FontStyles.Normal, TextAlignmentOptions.Center);
+            _confirmBodyText.color = new Color(0.85f, 0.87f, 0.92f);
+            var bodyRt = _confirmBodyText.rectTransform;
+            bodyRt.anchoredPosition = new Vector2(0f, -120f);
+            bodyRt.sizeDelta = new Vector2(-60f, 110f);
+
+            _confirmNoText = CreateDialogButton(panelGo.transform, "CancelBtn", new Vector2(-170f, 40f),
+                new Color(0.25f, 0.25f, 0.28f, 1f), HideConfirmDialog);
+            _confirmYesText = CreateDialogButton(panelGo.transform, "ConfirmBtn", new Vector2(170f, 40f),
+                new Color(0.86f, 0.27f, 0.27f, 1f), () =>
+                {
+                    var onYes = _confirmOnYes;
+                    HideConfirmDialog();
+                    onYes?.Invoke();
+                });
+
+            _confirmDialogGo.SetActive(false);
+        }
+
+        TextMeshProUGUI CreateDialogButton(Transform parent, string name, Vector2 pos, Color color, Action onClick)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0f);
+            rt.pivot = new Vector2(0.5f, 0f);
+            rt.anchoredPosition = pos;
+            rt.sizeDelta = new Vector2(300f, 96f);
+            go.AddComponent<Image>().color = color;
+            go.AddComponent<Button>().onClick.AddListener(() => onClick());
+
+            var label = CreateTmp(go.transform, "Text", 30, FontStyles.Bold, TextAlignmentOptions.Center);
+            var lrt = label.rectTransform;
+            lrt.anchorMin = Vector2.zero;
+            lrt.anchorMax = Vector2.one;
+            lrt.pivot = new Vector2(0.5f, 0.5f);
+            lrt.offsetMin = lrt.offsetMax = Vector2.zero;
+            return label;
+        }
+
         public void HighlightColumn(int colIndex)
         {
             if (_colOverlayBtns == null) return;
+            _tutorialHighlightedColumn = colIndex;
 
             float cellH = 920f / _settings.Rows;
             float halfHeight = (_settings.Rows * cellH) * 0.5f;
@@ -1890,7 +2272,8 @@ namespace StackSurge.UI
                         ort.sizeDelta = Vector2.zero;
                         var oimg = overlayGo.AddComponent<Image>();
                         oimg.color = new Color(0.95f, 0.75f, 0.2f, 0.2f);
-                        overlayGo.transform.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true);
+                        oimg.raycastTarget = false;
+                        overlayGo.transform.DOScale(1.08f, 0.6f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true).SetLink(overlayGo);
                     }
 
                     var arrowGo = btnGo.transform.Find("TutorialArrow")?.gameObject;
@@ -1907,7 +2290,8 @@ namespace StackSurge.UI
                         txt.color = new Color(0.95f, 0.75f, 0.2f, 1f);
                         txt.fontStyle = FontStyles.Bold;
                         txt.alignment = TextAlignmentOptions.Center;
-                        art.DOAnchorPosY(halfHeight - 40f, 0.5f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true);
+                        txt.raycastTarget = false;
+                        art.DOAnchorPosY(halfHeight - 40f, 0.5f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine).SetUpdate(true).SetLink(arrowGo);
                     }
 
                     for (int r = 0; r < _settings.Rows; r++)
@@ -1947,6 +2331,7 @@ namespace StackSurge.UI
 
         public void ClearColumnHighlight()
         {
+            _tutorialHighlightedColumn = -1;
             if (_colOverlayBtns == null) return;
 
             for (int c = 0; c < _colOverlayBtns.Length; c++)

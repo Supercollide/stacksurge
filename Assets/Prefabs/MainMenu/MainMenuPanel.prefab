@@ -4957,7 +4957,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: Change name...
+  m_text: Nickname (not your real name)
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 93567acbc2f8741eb824475164e11a19, type: 2}
   m_sharedMaterial: {fileID: -836754313543439468, guid: 93567acbc2f8741eb824475164e11a19, type: 2}
@@ -4987,9 +4987,9 @@ MonoBehaviour:
   m_fontSize: 18
   m_fontSizeBase: 18
   m_fontWeight: 400
-  m_enableAutoSizing: 0
-  m_fontSizeMin: 0
-  m_fontSizeMax: 0
+  m_enableAutoSizing: 1
+  m_fontSizeMin: 12
+  m_fontSizeMax: 18
   m_fontStyle: 0
   m_HorizontalAlignment: 1
   m_VerticalAlignment: 512

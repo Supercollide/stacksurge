@@ -55,6 +55,7 @@ namespace StackSurge
             _game.TutorialRequiredColumn = 2;
 
             yield return WaitForActionAndResolution();
+            _game.TutorialRequiredColumn = -1; // no drops between steps / under the dialogs
             _view.ClearColumnHighlight();
             _view.HideTutorialDialog();
 
@@ -78,6 +79,7 @@ namespace StackSurge
             _game.TutorialRequiredColumn = 2;
 
             yield return WaitForActionAndResolution();
+            _game.TutorialRequiredColumn = -1; // no drops between steps / under the dialogs
             _view.ClearColumnHighlight();
             _view.HideTutorialDialog();
 
@@ -105,6 +107,7 @@ namespace StackSurge
             _game.TutorialRequiredColumn = 2;
 
             yield return WaitForActionAndResolution();
+            _game.TutorialRequiredColumn = -1; // no drops between steps / under the dialogs
             _view.ClearColumnHighlight();
             _view.HideTutorialDialog();
 

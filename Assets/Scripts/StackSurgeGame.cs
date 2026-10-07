@@ -40,7 +40,18 @@ namespace StackSurge
         bool _resolvingMatches;
         int _tilesPlacedThisRun;
 
-        [SerializeField] float _blinkTime = 0.25f;
+        // Every second spent resolving is a second the board refuses taps, so these stay short.
+        [SerializeField] float _blinkTime = 0.2f;
+        const float BombBlinkSeconds = 0.18f;
+        const float RiseSlideSeconds = 0.12f;
+        const float PostWaveSeconds = 0.04f;
+
+        // One-tap buffer: a tap that lands while the board is resolving is replayed when it settles.
+        const float TapBufferSeconds = 0.5f;
+        int _bufferedColumn = -1;
+        float _bufferedTapTime;
+
+        bool _settingsFrozeClock;
 
         // ── Tutorial Fields & Properties ─────────────────────────────────────
         private bool _inTutorial = false;
@@ -88,6 +99,8 @@ namespace StackSurge
             _slowFillBuff = 0f;
             _playing = true;
             _resolvingMatches = false;
+            ClearTapBuffer();
+            _view.ResetBoardVisuals();
         }
 
         internal void RunUpdateHud() => UpdateHud();
@@ -106,6 +119,7 @@ namespace StackSurge
         public void StartTutorial()
         {
             StopAllCoroutines();
+            ClearTapBuffer();
             Time.timeScale = 1f; // Ensure clock runs — WaitForSeconds blocks if timeScale == 0
             _view.HideMainMenu();
             _view.HideGameOver();
@@ -168,16 +182,33 @@ namespace StackSurge
             );
 
             _tutorialController = new TutorialController(this);
-            _view.OnReplayTutorialTriggered = StartTutorial;
+            _view.OnReplayTutorialTriggered = ReplayTutorialFromHelp;
             _view.OnNotificationSettingsTriggered = OpenNotificationSettings;
+            _view.IsRunActive = () => _playing && !_inTutorial;
+            _view.GetActiveRunScore = () => _playing && !_inTutorial && _score != null ? _score.TotalScore : -1;
+            _view.OnQuitRunConfirmed = QuitRunToMainMenu;
+
+            // Build the toast UI now (avoids a hitch on the first toast) and hold toasts while the player is busy.
+            InAppNotificationView.EnsureInstance();
+            InAppNotificationView.IsBusy = () =>
+                _inTutorial || (_playing && Time.timeScale > 0f) || (_view != null && _view.IsLoadingScreenActive);
 
             // Game starts only after loading screen finishes fading
             _view.OnLoadingDone = OnLoadingScreenFinished;
+
+            // Analytics consent prompt, shown once the loading screen is done (OnLoadingScreenFinished).
+            GameObject consentObj = new GameObject("[AnalyticsConsentUI]");
+            _analyticsConsentUI = consentObj.AddComponent<AnalyticsConsentUI>();
+            // A push tap that launched the app waits behind the consent prompt; open it once the player answers.
+            _analyticsConsentUI.Initialize(_save, onDecided: () => TryRoutePendingPush());
 
             // UGS / Challenges async initialization
             _view.UpdateLoadingStatus("CONNECTING TO SERVICES...");
             var defs = _challengeAssets != null && _challengeAssets.Length > 0 ? _challengeAssets : BuildDefaultChallenges();
             await _provider.InitializeAsync(_save, defs);
+
+            // Starts Unity Analytics only if the player already agreed (no-op otherwise).
+            AnalyticsConsent.Apply(_save);
 
             _friendsService = new FriendsService(_provider.IsOnline, _save);
             if (_friendsManagerUI != null)
@@ -200,9 +231,9 @@ namespace StackSurge
             {
                 // Remote pushes honour the RECIPIENT's public preference (read from Cloud Save).
                 NotificationService.Instance.RecipientPrefsResolver = id => _friendsService.GetSocialPrefsAsync(id);
-                NotificationService.Instance.OnPushOpened -= OnPushOpened;
-                NotificationService.Instance.OnPushOpened += OnPushOpened;
-                NotificationService.Instance.RescheduleReminders();
+                // Push / reminder / toast taps are queued as a pending route and opened when it is safe (see TryRoutePendingPush).
+                NotificationService.Instance.PendingRouteAvailable -= OnPendingRouteAvailable;
+                NotificationService.Instance.PendingRouteAvailable += OnPendingRouteAvailable;
             }
 
             GameObject notifSettingsObj = new GameObject("[NotificationSettingsUI]");
@@ -215,11 +246,13 @@ namespace StackSurge
                     NotificationService.Instance?.SyncPreferenceTags();
                 },
                 onSocialSettingsChanged: () => { _ = _friendsService?.PublishSocialPrefsAsync(); });
+            _notificationSettingsUI.Closed += OnNotificationSettingsClosed;
 
             _view.EnableStartButton();
         }
 
         private NotificationSettingsUI _notificationSettingsUI;
+        private AnalyticsConsentUI _analyticsConsentUI;
 
         /// <summary>
         /// Single place that wires every leaderboard callback. Called at bootstrap and again after a rename,
@@ -255,10 +288,20 @@ namespace StackSurge
             );
         }
 
-        /// <summary>Routes a tapped remote push to the matching screen.</summary>
-        void OnPushOpened(PushKind kind)
+        void OnPendingRouteAvailable() => TryRoutePendingPush();
+
+        /// <summary>
+        /// Opens the screen for a tapped push, reminder or toast. Only when the player is on the main menu: never
+        /// during loading, a run, the tutorial or the game-over panel (the route stays pending until then).
+        /// </summary>
+        bool TryRoutePendingPush()
         {
-            if (_playing || _inTutorial) return; // don't yank the player out of a run
+            var notifications = NotificationService.Instance;
+            if (notifications == null || !notifications.HasPendingRoute) return false;
+            if (_playing || _inTutorial || _view == null) return false;
+            if (_view.IsLoadingScreenActive || _view.IsGameOverShowing) return false;
+            if (AnalyticsConsent.NeedsPrompt(_save) || PushPermissionPromptUI.IsOpen) return false; // modal is up
+            if (!notifications.TryConsumePendingRoute(out PushKind kind, out string scope)) return false;
 
             switch (kind)
             {
@@ -271,30 +314,65 @@ namespace StackSurge
                 case PushKind.FriendBeatScore:
                     if (_leaderboardManager != null)
                     {
+                        if (Enum.TryParse(scope, out LeaderboardScope parsed)) _leaderboardManager.SetLeaderboardScope(parsed);
                         _leaderboardManager.SetFilterMode(LeaderboardFilterMode.FriendsOnly);
                         _leaderboardManager.ShowLeaderboard();
                     }
                     break;
+                // PushKind.Reminder: the main menu (ready to play) is already the destination.
             }
+            return true;
         }
 
         public void OpenNotificationSettings()
         {
-            if (_notificationSettingsUI != null)
+            if (_notificationSettingsUI == null || _notificationSettingsUI.IsOpen) return;
+
+            // Opened mid-run (from Help): keep the run frozen until the dialog closes.
+            if (!_settingsFrozeClock && _playing && !_inTutorial && Time.timeScale > 0f)
             {
-                _notificationSettingsUI.Show();
+                _settingsFrozeClock = true;
+                Time.timeScale = 0f;
             }
+            _notificationSettingsUI.Show();
+        }
+
+        void OnNotificationSettingsClosed()
+        {
+            if (!_settingsFrozeClock) return;
+            _settingsFrozeClock = false;
+            if (!_view.IsPaused) Time.timeScale = 1f;
+        }
+
+        void OnApplicationFocus(bool hasFocus)
+        {
+            // Notification shade, incoming call, system dialog: freeze the run so rows don't rise unseen.
+            if (!hasFocus) AutoPauseRun();
+        }
+
+        /// <summary>Pauses an active run (never auto-resumes). No-op if already paused or a modal froze the clock.</summary>
+        void AutoPauseRun()
+        {
+            if (!_playing || _inTutorial || _view == null) return;
+            if (_view.IsPaused || Time.timeScale <= 0f) return;
+            ClearTapBuffer();
+            _view.PauseGame();
         }
 
         void OnApplicationPause(bool pauseStatus)
         {
             if (pauseStatus)
             {
-                NotificationService.Instance?.RescheduleReminders();
+                AutoPauseRun();
+                // Reminders are only armed while the app is in the background, so they never fire mid-game.
+                NotificationService.Instance?.OnAppBackgrounded();
                 if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Offline);
             }
             else
             {
+                // Cancels armed reminders, picks up a tapped reminder, and re-normalizes the streak for a new day.
+                NotificationService.Instance?.OnAppForegrounded();
+                if (_view != null) _view.RefreshMainMenuStats();
                 if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Online);
             }
         }
@@ -311,6 +389,10 @@ namespace StackSurge
 
         void Update()
         {
+            // Android's Back button / back gesture arrives as Escape in the Input System.
+            var backKeyboard = Keyboard.current;
+            if (backKeyboard != null && backKeyboard.escapeKey.wasPressedThisFrame) HandleBack();
+
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             var keyboard = Keyboard.current;
             if (keyboard != null)
@@ -348,6 +430,27 @@ namespace StackSurge
 #endif
         }
 
+        /// <summary>
+        /// Android Back: closes the top-most panel, otherwise pauses/resumes the run. On the main menu it does
+        /// nothing, so a stray swipe never quits the game.
+        /// </summary>
+        void HandleBack()
+        {
+            if (_view == null) return;
+
+            if (PushPermissionPromptUI.IsOpen) { PushPermissionPromptUI.Dismiss(); return; } // top-most modal
+            if (_notificationSettingsUI != null && _notificationSettingsUI.IsOpen) { _notificationSettingsUI.Hide(); return; }
+            if (_view.IsConfirmDialogOpen) { _view.HideConfirmDialog(); return; }
+            if (_friendsManagerUI != null && _friendsManagerUI.IsOpen) { _friendsManagerUI.ClosePanel(); return; }
+            if (_leaderboardManager != null && _leaderboardManager.IsOpen) { _leaderboardManager.HideLeaderboard(); return; }
+            if (_view.IsChallengesOpen) { _view.ToggleChallenges(); return; }
+            if (_view.IsHelpOpen) { _view.ToggleHelp(); return; }
+            if (_view.IsPaused) { _view.ResumeGame(); return; }
+            if (_inTutorial) return; // the tutorial is driven by its own dialog buttons
+            if (_playing) { ClearTapBuffer(); _view.PauseGame(); return; }
+            if (_view.IsGameOverShowing) { GoToMainMenuFromGameOver(); return; }
+        }
+
         void BeginRun()
         {
             _view.SetTutorialActive(false); // Re-enable all buttons (covers tutorial->game and menu->game)
@@ -373,6 +476,8 @@ namespace StackSurge
             _slowFillBuff = 0f;
             _playing = true;
             _resolvingMatches = false;
+            ClearTapBuffer();
+            _view.ResetBoardVisuals();
             _current = RollIncomingTile();
             _next = RollIncomingTile();
 
@@ -407,20 +512,32 @@ namespace StackSurge
 
         public void OnColumnClicked(int col)
         {
-            if (!_playing || _resolvingMatches) return;
+            if (!_playing) return;
+            if (Time.timeScale <= 0f) return; // paused, or a panel froze the run
+
+            if (_resolvingMatches)
+            {
+                // Don't drop the tap: remember the latest one and replay it when the board settles (FinishResolve).
+                if (!_inTutorial)
+                {
+                    _bufferedColumn = col;
+                    _bufferedTapTime = Time.unscaledTime;
+                }
+                return;
+            }
 
             // If in tutorial mode, only allow dropping in the required column
             if (_inTutorial && col != _tutorialRequiredColumn)
             {
+                _view.RejectColumnTap(col, nudgeTiles: false);
                 return;
             }
 
             int row = _board.GetLowestEmptyRow(col);
             if (row < 0)
             {
-                if (_inTutorial) return;
-
-                EndRun();
+                // Full column: refuse the tap instead of ending the run. The run ends only when a rising row overflows.
+                _view.RejectColumnTap(col);
                 return;
             }
 
@@ -508,7 +625,7 @@ namespace StackSurge
                 _view.RefreshGrid(_board.Cells);
                 UpdateHud();
 
-                yield return new WaitForSeconds(0.1f);
+                yield return new WaitForSeconds(PostWaveSeconds);
 
                 if (perfect)
                 {
@@ -576,8 +693,29 @@ namespace StackSurge
         {
             _resolvingMatches = true;
             yield return ResolveMatchesAnimCoroutineInner();
-            _resolvingMatches = false;
+            FinishResolve();
         }
+
+        /// <summary>
+        /// Ends a resolve sequence and replays a tap that arrived during it, if it is recent and its column
+        /// still has room (a buffered tap must never land on a full column).
+        /// </summary>
+        void FinishResolve()
+        {
+            _resolvingMatches = false;
+            if (_bufferedColumn < 0) return;
+
+            int col = _bufferedColumn;
+            float age = Time.unscaledTime - _bufferedTapTime;
+            ClearTapBuffer();
+
+            if (!_playing || _inTutorial || Time.timeScale <= 0f) return;
+            if (age > TapBufferSeconds) return;
+            if (_board.GetLowestEmptyRow(col) < 0) return;
+            OnColumnClicked(col);
+        }
+
+        void ClearTapBuffer() => _bufferedColumn = -1;
 
         IEnumerator ExplodeBombAndResolve(int col, int row)
         {
@@ -585,7 +723,7 @@ namespace StackSurge
             _board.SetCell(col, row, TileKind.Bomb);
             _view.RefreshGrid(_board.Cells);
 
-            yield return _view.BlinkBombAreaCoroutine(col, row, _board.Cells, 0.25f);
+            yield return _view.BlinkBombAreaCoroutine(col, row, _board.Cells, BombBlinkSeconds);
 
             _board.ExplodeBomb3x3(col, row);
             
@@ -598,7 +736,7 @@ namespace StackSurge
             _view.RefreshGrid(_board.Cells);
 
             yield return ResolveMatchesAnimCoroutineInner();
-            _resolvingMatches = false;
+            FinishResolve();
         }
 
         IEnumerator RiseRowAndResolve()
@@ -613,18 +751,30 @@ namespace StackSurge
 
             _view.RefreshGrid(_board.Cells);
 
-            yield return _view.SlideGridUpCoroutine(0.2f);
+            yield return _view.SlideGridUpCoroutine(RiseSlideSeconds);
 
             yield return ResolveMatchesAnimCoroutineInner();
-            _resolvingMatches = false;
+            FinishResolve();
         }
 
         void EndRun()
         {
+            bool isNewBest = RecordRun();
+            _view.ShowGameOver(_score.TotalScore, _save.DailyBest, _save.AllTimeHigh, _save.Streak, isNewBest);
+        }
+
+        /// <summary>
+        /// Saves the finished run: challenges, best scores, streak, cloud save and leaderboard submission.
+        /// Shared by game over and by ending a run from the pause menu. Returns true for a new all-time best.
+        /// </summary>
+        bool RecordRun()
+        {
             _playing = false;
+            ClearTapBuffer();
             _challenges.TickRun(_timeAlive, _score.TotalScore, _score.BestComboMultiplier);
             int previousBest = _save.AllTimeHigh; // capture before RegisterRunEnd updates it
             LocalProgress.RegisterRunEnd(_score.TotalScore, _save);
+            NotificationService.Instance?.RecordRunCompleted(); // learns the usual play hour for reminder timing
 
             if (_provider != null)
             {
@@ -633,8 +783,49 @@ namespace StackSurge
 
             if (_leaderboardService != null)
                 _ = _leaderboardService.SubmitScoreAsync(_score.TotalScore, previousBest);
-            
-            _view.ShowGameOver(_score.TotalScore, _save.DailyBest, _save.AllTimeHigh, _save.Streak);
+
+            return _score.TotalScore > previousBest;
+        }
+
+        /// <summary>Pause → Main Menu (after the confirm dialog): the run counts, exactly like a game over.</summary>
+        void QuitRunToMainMenu()
+        {
+            if (_playing && !_inTutorial)
+            {
+                StopAllCoroutines(); // an in-flight clear/rise sequence must not end the run a second time
+                _resolvingMatches = false;
+                RecordRun();
+            }
+            GoToMainMenuFromGameOver();
+        }
+
+        /// <summary>Help → Replay Tutorial. A run in progress is saved first rather than thrown away.</summary>
+        void ReplayTutorialFromHelp()
+        {
+            if (_playing && !_inTutorial)
+            {
+                StopAllCoroutines();
+                _resolvingMatches = false;
+                RecordRun();
+            }
+            StartTutorial();
+        }
+
+        /// <summary>Leaves the tutorial early (Pause → Main Menu, Back) without leaving the menu locked.</summary>
+        void AbortTutorial()
+        {
+            if (!_inTutorial) return;
+
+            StopAllCoroutines(); // the tutorial coroutine and any resolve it started
+            _tutorialCoroutine = null;
+            _inTutorial = false;
+            _tutorialRequiredColumn = -1;
+            _resolvingMatches = false;
+            _playing = false;
+            ClearTapBuffer();
+            _view.ClearColumnHighlight();
+            _view.HideTutorialDialog();
+            _view.SetTutorialActive(false);
         }
 
         public void Retry()
@@ -654,22 +845,9 @@ namespace StackSurge
             float interval = _slowFillBuff > 0f ? 8f : DifficultyCurve.GetRowIntervalSeconds(_timeAlive);
             float nextRise = Mathf.Max(0f, interval - _riseAccumulator);
             float graceLeft = Mathf.Max(0f, _settings.InitialRiseGraceSeconds - _timeAlive);
-            
-            string riseLine = graceLeft > 0f
-                ? $"Auto-rise starts in: {graceLeft:0.0}s"
-                : $"Next auto-rise: {nextRise:0.0}s";
+            bool inGrace = graceLeft > 0f;
 
-            string timeStr = FormatTime(_timeAlive);
-            float wildChance = DifficultyCurve.GetWildChance(_timeAlive) * 100f;
-
-            _view.UpdateHud(_score.TotalScore, timeStr, riseLine, wildChance, _current, _next);
-        }
-
-        static string FormatTime(float t)
-        {
-            int m = (int)(t / 60f);
-            int s = (int)(t % 60f);
-            return $"{m:00}:{s:00}";
+            _view.UpdateHud(_score.TotalScore, _timeAlive, inGrace ? graceLeft : nextRise, inGrace, _current, _next);
         }
 
         ChallengeDisplayData[] GetChallengeDisplayData()
@@ -699,15 +877,24 @@ namespace StackSurge
             _playing = false;
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
             _view.ShowMainMenu(false);
+            if (_analyticsConsentUI != null) _analyticsConsentUI.ShowIfNeeded();
+
+            // A push or reminder tap that launched the app; wait if the consent prompt is up.
+            if (!AnalyticsConsent.NeedsPrompt(_save)) TryRoutePendingPush();
         }
 
         public void GoToMainMenuFromGameOver()
         {
+            AbortTutorial();
             _playing = false;
             _view.HideGameOver();
             _view.SetInstructionalTextActive(false);
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
             _view.ShowMainMenu(true);
+
+            // Back on the menu after a run: open anything tapped meanwhile, otherwise this is the moment for the
+            // soft notification prompt (it checks permission, consent, ask count and spacing itself).
+            if (!TryRoutePendingPush()) PushPermissionPromptUI.ShowIfEligible(_save, onClosed: () => TryRoutePendingPush());
         }
 
         async void OnPlayerNameChangedFromMainMenu(string newName)
