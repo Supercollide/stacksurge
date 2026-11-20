@@ -315,6 +315,13 @@ namespace StackSurge.Meta
             return s.Length > 0 ? s : null;
         }
 
+        /// <summary>Links this device to the signed-in player for pushes, for a sign-in that happened after launch.</summary>
+        public void BindSignedInPlayer()
+        {
+            if (AuthenticationService.Instance != null && AuthenticationService.Instance.IsSignedIn)
+                BindUserToPushService(AuthenticationService.Instance.PlayerId);
+        }
+
         /// <summary>
         /// Binds the authenticated UGS PlayerId to OneSignal so Cloud Code can target this device by external ID.
         /// Safe to call again after a late sign-in.

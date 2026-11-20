@@ -75,3 +75,7 @@ Thumbs.db
 
 # Ignore utmp folders
 .utmp/
+
+# Android signing keystore and passwords, read by Assets/Editor/Build/BuildScript.cs
+/android-signing.json
+/keystore/

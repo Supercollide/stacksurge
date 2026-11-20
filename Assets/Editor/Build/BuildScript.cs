@@ -9,9 +9,24 @@ public static class BuildScript
 
     // ── Keystore ───────────────────────────────────────────────────────────
     private const string KeystorePath = "/Users/addi/brokendreams/StackSurge/keystore/stacksurge.keystore";
-    private const string KeystorePass = "SS54321Collide";
     private const string KeyAlias     = "stacksurge";
-    private const string KeyAliasPass = "SS54321Collide";
+
+    // Passwords are not kept in source. Each one comes from its environment
+    // variable if set, otherwise from SigningFile in the project root, which is
+    // git-ignored. Unity opened from the Hub or Dock does not see variables
+    // exported in a shell profile, so the file is the simpler route for BuildWindow.
+    private const string KeystorePassEnv = "STACKSURGE_KEYSTORE_PASS";
+    private const string KeyPassEnv      = "STACKSURGE_KEY_PASS";
+    private const string SigningFile     = "android-signing.json";
+
+#pragma warning disable CS0649 // fields are filled by JsonUtility
+    [Serializable]
+    private class SigningFileData
+    {
+        public string keystorePass;
+        public string keyPass;
+    }
+#pragma warning restore CS0649
 
     // ── Version bump enum ──────────────────────────────────────────────────
     [Flags]
@@ -23,6 +38,14 @@ public static class BuildScript
     {
         string label = aab ? "AAB" : "APK";
         string ext   = aab ? ".aab" : ".apk";
+
+        // ── Signing passwords (checked before the version is bumped) ───────
+        string keystorePass = null, keyPass = null, passSource = null;
+        if (aab && !TryLoadSigningPasswords(out keystorePass, out keyPass, out passSource))
+        {
+            Debug.LogError(MissingPasswordsMessage(label, keystorePass, keyPass));
+            return;
+        }
 
         // ── Bump semantic version ──────────────────────────────────────────
         string oldVersion = PlayerSettings.bundleVersion;
@@ -46,10 +69,10 @@ public static class BuildScript
         {
             PlayerSettings.Android.useCustomKeystore = true;
             PlayerSettings.Android.keystoreName      = KeystorePath;
-            PlayerSettings.Android.keystorePass      = KeystorePass;
+            PlayerSettings.Android.keystorePass      = keystorePass;
             PlayerSettings.Android.keyaliasName      = KeyAlias;
-            PlayerSettings.Android.keyaliasPass      = KeyAliasPass;
-            Debug.Log($"[Build] [{label}] Signing with alias: {KeyAlias}");
+            PlayerSettings.Android.keyaliasPass      = keyPass;
+            Debug.Log($"[Build] [{label}] Signing with alias: {KeyAlias} (passwords from {passSource})");
         }
         else
         {
@@ -82,6 +105,74 @@ public static class BuildScript
         Debug.Log($"[Build] [{label}] Starting → {outputPath}");
         BuildPipeline.BuildPlayer(options);
         Debug.Log($"[Build] [{label}] Done → {outputPath}");
+    }
+
+    // ── Signing helpers ────────────────────────────────────────────────────
+
+    private static string SigningFilePath() =>
+        Path.Combine(Path.GetDirectoryName(Application.dataPath), SigningFile);
+
+    /// <summary>
+    /// Takes each password from its environment variable, falling back to SigningFile.
+    /// Returns false if either is still missing. Never logs the values.
+    /// </summary>
+    private static bool TryLoadSigningPasswords(out string keystorePass, out string keyPass, out string source)
+    {
+        keystorePass = Environment.GetEnvironmentVariable(KeystorePassEnv);
+        keyPass      = Environment.GetEnvironmentVariable(KeyPassEnv);
+        bool usedEnv  = !string.IsNullOrEmpty(keystorePass) || !string.IsNullOrEmpty(keyPass);
+        bool usedFile = false;
+
+        if (string.IsNullOrEmpty(keystorePass) || string.IsNullOrEmpty(keyPass))
+        {
+            SigningFileData file = ReadSigningFile();
+            if (file != null)
+            {
+                if (string.IsNullOrEmpty(keystorePass) && !string.IsNullOrEmpty(file.keystorePass))
+                {
+                    keystorePass = file.keystorePass;
+                    usedFile = true;
+                }
+                if (string.IsNullOrEmpty(keyPass) && !string.IsNullOrEmpty(file.keyPass))
+                {
+                    keyPass = file.keyPass;
+                    usedFile = true;
+                }
+            }
+        }
+
+        source = usedEnv && usedFile ? $"environment and {SigningFile}"
+               : usedFile            ? SigningFile
+               :                       "environment";
+        return !string.IsNullOrEmpty(keystorePass) && !string.IsNullOrEmpty(keyPass);
+    }
+
+    private static SigningFileData ReadSigningFile()
+    {
+        string path = SigningFilePath();
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            return JsonUtility.FromJson<SigningFileData>(File.ReadAllText(path));
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[Build] Could not parse {path}: {e.Message}");
+            return null;
+        }
+    }
+
+    private static string MissingPasswordsMessage(string label, string keystorePass, string keyPass)
+    {
+        var missing = new System.Collections.Generic.List<string>();
+        if (string.IsNullOrEmpty(keystorePass)) missing.Add($"keystore password ({KeystorePassEnv})");
+        if (string.IsNullOrEmpty(keyPass))      missing.Add($"key password ({KeyPassEnv})");
+
+        return $"[Build] [{label}] Build cancelled, version left unchanged. Missing {string.Join(" and ", missing)}. " +
+               $"Set the environment variable, or add the value to {SigningFilePath()} (git-ignored) in the form " +
+               "{ \"keystorePass\": \"...\", \"keyPass\": \"...\" }. " +
+               "Unity opened from the Hub or Dock does not see variables exported in a shell profile.";
     }
 
     // ── Version helpers ────────────────────────────────────────────────────

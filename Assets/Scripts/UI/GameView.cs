@@ -722,7 +722,7 @@ namespace StackSurge.UI
             cg.DOKill();
             cg.alpha = 0;
             cg.DOFade(1f, 0.4f).SetUpdate(true);
-            // Taps already in flight when the board filled must not land on RETRY / MAIN MENU.
+            // Taps already in flight when the board filled must not land on PLAY AGAIN / MAIN MENU.
             cg.interactable = false;
             DOVirtual.DelayedCall(0.5f, () => cg.interactable = true, ignoreTimeScale: true).SetLink(_gameOverRoot);
             _gameOverRoot.transform.DOKill();
@@ -1348,8 +1348,8 @@ namespace StackSurge.UI
             text.alignment = TextAlignmentOptions.Center;
             text.raycastTarget = false;
             text.text = allDone
-                ? $"ALL {data.Length} DONE TODAY"
-                : $"FINISH ALL {data.Length} FOR +{ChallengeProvider.AllDoneBonusPoints.ToString("N0", CultureInfo.InvariantCulture)}";
+                ? "TODAY'S CHALLENGES COMPLETED"
+                : $"COMPLETE ALL CHALLENGES FOR +{ChallengeProvider.AllDoneBonusPoints.ToString("N0", CultureInfo.InvariantCulture)}";
             text.color = allDone ? UiSkin.Teal : UiSkin.TextMuted;
         }
 

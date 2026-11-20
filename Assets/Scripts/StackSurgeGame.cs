@@ -196,7 +196,7 @@ namespace StackSurge
             // Starts Unity Analytics only if the player already agreed (no-op otherwise).
             AnalyticsConsent.Apply(_save);
 
-            _friendsService = new FriendsService(_provider.IsOnline, _save);
+            _friendsService = new FriendsService(_provider, _save);
             if (_friendsManagerUI != null)
             {
                 _friendsManagerUI.Initialize(_friendsService);
@@ -205,11 +205,13 @@ namespace StackSurge
             // Ensure Friends SDK is initialized and publish Online presence
             _ = _friendsService.EnsureInitializedAsync();
 
-            _leaderboardService = new LeaderboardService(_provider.IsOnline, _save, _friendsService);
+            _leaderboardService = new LeaderboardService(_provider, _save, _friendsService);
             RegisterLeaderboardCallbacks();
             if (_leaderboardManager != null) _leaderboardManager.Prefetch(); // the first open already has its list
 
             _view.UpdateLoadingStatus(_provider.IsOnline ? "ONLINE" : "NO INTERNET, PLAYING OFFLINE");
+            _provider.WentOnline -= OnWentOnline;
+            _provider.WentOnline += OnWentOnline;
             _challenges = new ChallengeTracker(_provider);
 
             // Initialize Notification System & Programmatic Settings UI
@@ -276,6 +278,21 @@ namespace StackSurge
         }
 
         void OnPendingRouteAvailable() => TryRoutePendingPush();
+
+        /// <summary>
+        /// The game started offline and a retry has signed in. Friends and the leaderboard catch up on their own
+        /// (they listen to WentOnline too); this starts the rest of what launch skipped.
+        /// </summary>
+        void OnWentOnline()
+        {
+            AnalyticsConsent.Apply(_save); // only when the player agreed; a no-op otherwise
+            NotificationService.Instance?.BindSignedInPlayer();
+            if (_leaderboardManager != null)
+            {
+                if (_leaderboardManager.IsOpen) _ = _leaderboardManager.RefreshLeaderboard();
+                else _leaderboardManager.Prefetch();
+            }
+        }
 
         /// <summary>
         /// Opens the screen for a tapped push, reminder or toast. Only when the player is on the main menu: never
@@ -361,6 +378,8 @@ namespace StackSurge
                 NotificationService.Instance?.OnAppForegrounded();
                 if (_view != null) _view.RefreshMainMenuStats();
                 if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Online);
+                // If the game started offline, back in the foreground is a good moment to try signing in again.
+                if (_provider != null) _ = _provider.TryReconnectAsync(userAction: false);
             }
         }
 

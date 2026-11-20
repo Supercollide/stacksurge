@@ -9,6 +9,23 @@ using Unity.Services.RemoteConfig;
 
 namespace StackSurge.Meta
 {
+    /// <summary>Whether the game is signed in to Unity Gaming Services, and a way to try again when it isn't.</summary>
+    public interface IOnlineConnection
+    {
+        bool IsOnline { get; }
+
+        /// <summary>
+        /// Tries to sign in when the game is offline. Cheap to call often: it returns at once when already online, when
+        /// the phone has no network, while another attempt is running, or when the last attempt was too recent.
+        /// </summary>
+        /// <param name="userAction">True when the player asked for it (opened a screen, tapped TRY AGAIN): a shorter wait
+        /// between attempts.</param>
+        Task<bool> TryReconnectAsync(bool userAction);
+
+        /// <summary>Raised once when a retry signs in, after the challenge progress made offline is uploaded.</summary>
+        event Action WentOnline;
+    }
+
     /// <summary>
     /// Async service that manages the full challenge lifecycle:
     /// authentication → Remote Config fetch → today's set → Cloud Save load/save → offline fallback.
@@ -20,7 +37,7 @@ namespace StackSurge.Meta
     ///    picked per UTC day, the same for every player.
     /// Finishing all of a day's challenges adds <see cref="AllDoneBonusPoints"/> to the next run.
     /// </summary>
-    public class ChallengeProvider
+    public class ChallengeProvider : IOnlineConnection
     {
         public const int AllDoneBonusPoints = 2000; // on top of the three rewards (1,000 / 2,000 / 3,000)
 
@@ -60,22 +77,7 @@ namespace StackSurge.Meta
         {
             _save = save;
 
-            try
-            {
-                if (UnityServices.State != ServicesInitializationState.Initialized)
-                    await UnityServices.InitializeAsync();
-
-                if (!AuthenticationService.Instance.IsSignedIn)
-                    await AuthenticationService.Instance.SignInAnonymouslyAsync();
-
-                IsOnline = true;
-                Debug.Log("[ChallengeProvider] Signed in. PlayerID: " + AuthenticationService.Instance.PlayerId);
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning("[ChallengeProvider] Auth failed, falling back to local: " + e.Message);
-                IsOnline = false;
-            }
+            await TrySignInAsync();
 
             // Where today's challenges come from, then which ones they are.
             if (fixedAssets != null && fixedAssets.Length > 0) _fixedSet = fixedAssets;
@@ -90,6 +92,68 @@ namespace StackSurge.Meta
             EnsureToday();
 
             _initialised = true;
+        }
+
+        // ── Sign-in, and trying again later ──────────────────────────
+        // Sign-in happens at launch. If that fails, TryReconnectAsync retries at moments the game is busy with anyway
+        // (back in the foreground, a screen that needs the server, a finished run, TRY AGAIN). There is no timer and
+        // nothing runs in the background, and no attempt is made while the phone reports no network.
+        static readonly TimeSpan AutoRetryGap = TimeSpan.FromSeconds(30);
+        static readonly TimeSpan UserRetryGap = TimeSpan.FromSeconds(3);
+        DateTime _lastSignInAttemptUtc = DateTime.MinValue; // when the last attempt finished
+        Task<bool> _reconnectTask;
+
+        public event Action WentOnline;
+
+        async Task<bool> TrySignInAsync()
+        {
+            try
+            {
+                if (UnityServices.State != ServicesInitializationState.Initialized)
+                    await UnityServices.InitializeAsync();
+
+                if (!AuthenticationService.Instance.IsSignedIn)
+                    await AuthenticationService.Instance.SignInAnonymouslyAsync();
+
+                IsOnline = true;
+                Debug.Log("[ChallengeProvider] Signed in. PlayerID: " + AuthenticationService.Instance.PlayerId);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[ChallengeProvider] Sign-in failed, playing offline: " + e.Message);
+                IsOnline = false;
+            }
+            finally
+            {
+                _lastSignInAttemptUtc = DateTime.UtcNow;
+            }
+            return IsOnline;
+        }
+
+        public Task<bool> TryReconnectAsync(bool userAction)
+        {
+            if (IsOnline) return Task.FromResult(true);
+            if (!_initialised) return Task.FromResult(false); // the launch attempt is still running
+            if (_reconnectTask != null && !_reconnectTask.IsCompleted) return _reconnectTask;
+            if (Application.internetReachability == NetworkReachability.NotReachable) return Task.FromResult(false);
+            if (DateTime.UtcNow - _lastSignInAttemptUtc < (userAction ? UserRetryGap : AutoRetryGap)) return Task.FromResult(false);
+
+            _reconnectTask = ReconnectAsync();
+            return _reconnectTask;
+        }
+
+        async Task<bool> ReconnectAsync()
+        {
+            if (!await TrySignInAsync()) return false;
+            Debug.Log("[ChallengeProvider] Back online.");
+
+            // The progress made offline is the newest copy, so it goes up rather than the cloud copy coming down.
+            // Remote Config isn't fetched here: a different set would replace today's challenges and lose their progress.
+            await SaveAsync();
+
+            try { WentOnline?.Invoke(); }
+            catch (Exception e) { Debug.LogWarning("[ChallengeProvider] WentOnline handler failed: " + e.Message); }
+            return true;
         }
 
         // ── Remote Config: a fixed set or a replacement pool ─────────

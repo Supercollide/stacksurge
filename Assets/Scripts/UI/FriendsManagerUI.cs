@@ -135,6 +135,69 @@ namespace StackSurge.UI
             }
         }
 
+        // Shown when the friends server can't be reached. Opening a tab, TRY AGAIN and Send each retry the sign-in.
+        const string OfflineListMessage = "Couldn't load friends.\nCheck your connection and try again.";
+        const string OfflineAddMessage = "You're offline. Connect to the internet to add friends.";
+
+        string MyIdLabel() => _friendsService.HasPlayerId
+            ? $"My ID: {_friendsService.GetCurrentPlayerId()}"
+            : "My ID: shows when you're online";
+
+        /// <summary>Shows the offline message with TRY AGAIN and returns true when the friends server isn't reachable.</summary>
+        bool ShowOfflineIfUnavailable()
+        {
+            if (_friendsService.IsAvailable) return false;
+            SetStatus("");
+            DisplayEmptyState(OfflineListMessage);
+            AddTryAgainButton();
+            return true;
+        }
+
+        /// <summary>Same size and colour as the leaderboard's TRY AGAIN; the label uses this panel's button font.</summary>
+        void AddTryAgainButton()
+        {
+            if (_friendsRowContainer == null) return;
+            var holder = new GameObject("TryAgainRow", typeof(RectTransform), typeof(LayoutElement));
+            holder.transform.SetParent(_friendsRowContainer, false);
+            var holderLayout = holder.GetComponent<LayoutElement>();
+            holderLayout.minHeight = holderLayout.preferredHeight = 80f;
+            holderLayout.flexibleWidth = 1;
+
+            var go = new GameObject("TryAgainBtn", typeof(RectTransform));
+            go.transform.SetParent(holder.transform, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(260f, 68f);
+            var image = go.AddComponent<Image>();
+            image.color = UiSkin.Primary;
+            UiSprites.ApplyRounded(image, 16f);
+            var button = go.AddComponent<Button>();
+            button.targetGraphic = image;
+            button.onClick.AddListener(() =>
+            {
+                ClearContainer();
+                SetStatus("Connecting...");
+                _ = RefreshTabAsync(forceServerRefresh: true);
+            });
+
+            var labelGo = new GameObject("Text", typeof(RectTransform));
+            labelGo.transform.SetParent(go.transform, false);
+            var labelRect = (RectTransform)labelGo.transform;
+            labelRect.anchorMin = Vector2.zero;
+            labelRect.anchorMax = Vector2.one;
+            labelRect.offsetMin = labelRect.offsetMax = Vector2.zero;
+            var label = labelGo.AddComponent<TextMeshProUGUI>();
+            var buttonLabel = _sendRequestButton != null ? _sendRequestButton.GetComponentInChildren<TMP_Text>(true) : null;
+            if (buttonLabel != null) label.font = buttonLabel.font;
+            else if (_statusText != null) label.font = _statusText.font;
+            label.text = "TRY AGAIN";
+            label.fontSize = 26f;
+            label.color = Color.white;
+            label.alignment = TextAlignmentOptions.Center;
+            label.raycastTarget = false;
+            UiSkin.PadLabels(button);
+        }
+
         public void Initialize(FriendsService service)
         {
             _friendsService = service;
@@ -145,7 +208,7 @@ namespace StackSurge.UI
 
             if (_myPlayerIdText != null && _friendsService != null)
             {
-                _myPlayerIdText.text = $"My ID: {_friendsService.GetCurrentPlayerId()}";
+                _myPlayerIdText.text = MyIdLabel();
             }
 
             FitAddFriendSection();
@@ -225,6 +288,7 @@ namespace StackSurge.UI
 
         private void OnFriendsServiceUpdated()
         {
+            if (_myPlayerIdText != null && _friendsService != null) _myPlayerIdText.text = MyIdLabel(); // real ID once online
             if (_friendsRoot != null && _friendsRoot.activeSelf)
             {
                 _ = RefreshTabAsync();
@@ -268,7 +332,7 @@ namespace StackSurge.UI
 
             if (_myPlayerIdText != null && _friendsService != null)
             {
-                _myPlayerIdText.text = $"My ID: {_friendsService.GetCurrentPlayerId()}";
+                _myPlayerIdText.text = MyIdLabel();
             }
 
             // POP animation
@@ -357,7 +421,12 @@ namespace StackSurge.UI
                     await LoadPendingRequestsAsync(generation);
                     break;
                 case FriendsTab.AddFriend:
-                    SetStatus("Enter a Player ID or full name (Name#1234) to send a friend request.");
+                    await _friendsService.RefreshAsync(); // signs in again first if the game is offline
+                    if (generation != _refreshGeneration) return;
+                    if (_myPlayerIdText != null) _myPlayerIdText.text = MyIdLabel();
+                    SetStatus(_friendsService.IsAvailable
+                        ? "Enter a Player ID or full name (Name#1234) to send a friend request."
+                        : OfflineAddMessage);
                     break;
                 case FriendsTab.BlockedUsers:
                     await LoadBlockedUsersAsync(generation);
@@ -384,6 +453,7 @@ namespace StackSurge.UI
             if (generation != _refreshGeneration) return;
 
             ClearContainer();
+            if (ShowOfflineIfUnavailable()) return;
 
             if (friends == null || friends.Count == 0)
             {
@@ -430,6 +500,7 @@ namespace StackSurge.UI
             if (generation != _refreshGeneration) return;
 
             ClearContainer();
+            if (ShowOfflineIfUnavailable()) return;
 
             var allRequests = new List<FriendRequestData>();
             if (incoming != null) allRequests.AddRange(incoming);
@@ -508,6 +579,11 @@ namespace StackSurge.UI
         private void OnCopyMyIdClicked()
         {
             if (_friendsService == null) return;
+            if (!_friendsService.HasPlayerId)
+            {
+                SetStatus(OfflineAddMessage);
+                return;
+            }
             string myId = _friendsService.GetCurrentPlayerId();
             GUIUtility.systemCopyBuffer = myId;
             SetStatus($"Copied My ID ({myId}) to clipboard!");
@@ -590,6 +666,7 @@ namespace StackSurge.UI
             if (generation != _refreshGeneration) return;
 
             ClearContainer();
+            if (ShowOfflineIfUnavailable()) return;
 
             if (blocked == null || blocked.Count == 0)
             {
@@ -649,10 +726,12 @@ namespace StackSurge.UI
             le.minHeight = 160;
             le.flexibleWidth = 1;
 
+            // Same size and colour as the leaderboard's empty and error messages.
             TextMeshProUGUI txt = emptyObj.GetComponent<TextMeshProUGUI>();
+            if (_statusText != null) txt.font = _statusText.font;
             txt.text = message;
-            txt.fontSize = 15;
-            txt.color = new Color(0.7f, 0.72f, 0.8f);
+            txt.fontSize = 26;
+            txt.color = UiSkin.TextMuted;
             txt.alignment = TextAlignmentOptions.Center;
         }
 

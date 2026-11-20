@@ -47,6 +47,7 @@ namespace StackSurge.Meta
         /// -1 means no pending score.
         /// </summary>
         public int PendingLeaderboardScore = -1;
+        public string PendingPlayerName = "";      // a name changed while offline, sent on the next sign-in
 
         // ── Notification Settings & State ──────────────────────────────
         public bool NotifyLeaderboardDrops = true;

@@ -224,17 +224,17 @@ namespace StackSurge.UI
             string bonus = FormatNumber(ChallengeProvider.AllDoneBonusPoints);
             if (data.AllDoneBonusThisRun)
             {
-                _allDone.text = $"ALL {count} DONE: +{bonus} NEXT RUN";
+                _allDone.text = $"TODAY'S CHALLENGES COMPLETED: +{bonus} NEXT RUN";
                 _allDone.color = UiSkin.Teal;
             }
             else if (data.AllDoneBonusGranted)
             {
-                _allDone.text = $"ALL {count} DONE TODAY";
+                _allDone.text = "TODAY'S CHALLENGES COMPLETED";
                 _allDone.color = UiSkin.Teal;
             }
             else
             {
-                _allDone.text = $"FINISH ALL {count} FOR +{bonus}";
+                _allDone.text = $"COMPLETE ALL CHALLENGES FOR +{bonus}";
                 _allDone.color = UiSkin.TextMuted;
             }
         }
@@ -495,6 +495,8 @@ namespace StackSurge.UI
         void PlaceRetry(Button retry)
         {
             PlaceButton(retry, RetryHeight, 40f);
+            var label = retry.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label != null) label.text = "PLAY AGAIN"; // starts a new run (the scene's label said RETRY)
             var image = retry.GetComponent<Image>();
             if (image != null) { image.color = UiSkin.Primary; UiSprites.ApplyRounded(image, ButtonRadius); }
         }

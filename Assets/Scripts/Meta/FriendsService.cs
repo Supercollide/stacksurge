@@ -78,7 +78,7 @@ namespace StackSurge.Meta
     /// <summary>
     /// Async service wrapper for Unity Gaming Services (UGS) Friends.
     /// Handles friend listing, sending/accepting requests, removing friends, blocking users,
-    /// presence tracking and public social preferences. Includes offline mock data for testing.
+    /// presence tracking and public social preferences. Screenshot builds get sample data while offline.
     /// </summary>
     public class FriendsService
     {
@@ -87,8 +87,9 @@ namespace StackSurge.Meta
         private static readonly TimeSpan RefreshThrottle = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan PrefsCacheTtl = TimeSpan.FromSeconds(60);
 
-        private readonly bool _isOnline;
+        private readonly IOnlineConnection _connection;
         private readonly SaveData _save;
+        private bool _isOnline => _connection != null && _connection.IsOnline;
         private bool _isInitialized = false;
         private Task _initTask;
         private DateTime _lastRefreshUtc = DateTime.MinValue;
@@ -103,23 +104,57 @@ namespace StackSurge.Meta
 
         public event Action OnFriendsUpdated;
 
-        // Mock storage (offline mode)
+        // Sample friends and requests, for screenshot builds only (STACKSURGE_SHOTS). Every other build shows an
+        // offline message when the friends server can't be reached, so players never see made-up names.
+#if STACKSURGE_SHOTS
+        private static readonly bool SampleDataBuild = true;
+#else
+        private static readonly bool SampleDataBuild = false;
+#endif
+        private readonly bool _useSampleData;
+
+        // Sample storage (screenshot builds while offline)
         private readonly List<FriendData> _mockFriends = new List<FriendData>();
         private readonly List<FriendRequestData> _mockRequests = new List<FriendRequestData>();
         private readonly List<string> _mockBlocked = new List<string>();
 
-        public FriendsService(bool isOnline, SaveData save)
+        public FriendsService(IOnlineConnection connection, SaveData save)
         {
-            _isOnline = isOnline;
+            _connection = connection;
             _save = save;
 
-            if (!_isOnline)
-            {
-                InitializeMockData();
-            }
+            _useSampleData = !_isOnline && SampleDataBuild;
+            if (_useSampleData) InitializeMockData();
+
+            if (_connection != null) _connection.WentOnline += OnWentOnline;
+        }
+
+        // The game started offline and has now signed in: start the Friends SDK and let open screens reload.
+        private void OnWentOnline() => _ = StartAfterReconnectAsync();
+
+        private async Task StartAfterReconnectAsync()
+        {
+            await EnsureInitializedAsync();
+            OnFriendsUpdated?.Invoke();
+        }
+
+        /// <summary>When the game is offline, asks the connection to try signing in again (it limits how often).</summary>
+        private async Task ReconnectIfOfflineAsync()
+        {
+            if (!_isOnline && _connection != null && !_useSampleData)
+                await _connection.TryReconnectAsync(userAction: true);
         }
 
         private bool IsLive => _isOnline && _isInitialized && UgsFriendsService.Instance != null;
+
+        /// <summary>
+        /// False when the friends server can't be reached: offline at launch, or the Friends service failed to start.
+        /// The lists come back empty then, and the screen should say so rather than "no friends yet".
+        /// </summary>
+        public bool IsAvailable => IsLive || _useSampleData;
+
+        /// <summary>True when signed in, so <see cref="GetCurrentPlayerId"/> returns a real ID others can use.</summary>
+        public bool HasPlayerId => _isOnline && AuthenticationService.Instance != null && AuthenticationService.Instance.IsSignedIn;
 
         // ── Initialization ──────────────────────────────────────────────────
         /// <summary>
@@ -129,7 +164,7 @@ namespace StackSurge.Meta
         public Task EnsureInitializedAsync()
         {
             if (!_isOnline || _isInitialized) return Task.CompletedTask;
-            if (_initTask != null) return _initTask;
+            if (_initTask != null && !_initTask.IsCompleted) return _initTask; // a finished, failed attempt may run again
 
             _initTask = InitializeInternalAsync();
             return _initTask;
@@ -169,6 +204,7 @@ namespace StackSurge.Meta
         /// <param name="force">Bypass the throttle window.</param>
         public async Task RefreshAsync(bool force = false)
         {
+            await ReconnectIfOfflineAsync();
             await EnsureInitializedAsync();
             if (!IsLive) return;
 
@@ -478,12 +514,16 @@ namespace StackSurge.Meta
         public async Task<FriendRequestResult> SendFriendRequestAsync(string targetInput)
         {
             if (string.IsNullOrWhiteSpace(targetInput)) return FriendRequestResult.Failed;
+            // Google's pre-launch robots tap Add Friend on leaderboard rows; don't let them reach real players.
+            if (PlayTestDevice.IsTestLab) return FriendRequestResult.Failed;
             string cleanInput = targetInput.Trim();
 
+            await ReconnectIfOfflineAsync();
             await EnsureInitializedAsync();
 
             if (!IsLive)
             {
+                if (!_useSampleData) return FriendRequestResult.Failed;
                 _mockRequests.Add(new FriendRequestData
                 {
                     RelationshipId = "mock_req_" + UnityEngine.Random.Range(100, 999),
@@ -638,6 +678,7 @@ namespace StackSurge.Meta
 
             if (!IsLive)
             {
+                if (!_useSampleData) return false;
                 _mockFriends.RemoveAll(f => f.RelationshipId == relationshipId);
                 _mockRequests.RemoveAll(r => r.RelationshipId == relationshipId);
                 OnFriendsUpdated?.Invoke();
@@ -709,6 +750,7 @@ namespace StackSurge.Meta
 
             if (!IsLive)
             {
+                if (!_useSampleData) return false;
                 if (!_mockBlocked.Contains(targetPlayerId))
                 {
                     _mockBlocked.Add(targetPlayerId);
@@ -742,6 +784,7 @@ namespace StackSurge.Meta
 
             if (!IsLive)
             {
+                if (!_useSampleData) return false;
                 _mockBlocked.Remove(targetPlayerId);
                 OnFriendsUpdated?.Invoke();
                 return true;

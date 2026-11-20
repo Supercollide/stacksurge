@@ -45,21 +45,35 @@ namespace StackSurge.Meta
         const string AllTimeLeaderboardId = "all_time_highs";
         const int    TopCount             = 15;
 
-        readonly bool           _isOnline;
-        readonly SaveData       _save;
-        readonly FriendsService _friendsService;
+        readonly IOnlineConnection _connection;
+        readonly SaveData          _save;
+        readonly FriendsService    _friendsService;
 
-        public LeaderboardService(bool isOnline, SaveData save, FriendsService friendsService = null)
+        bool _isOnline => _connection != null && _connection.IsOnline;
+
+        public LeaderboardService(IOnlineConnection connection, SaveData save, FriendsService friendsService = null)
         {
-            _isOnline       = isOnline;
+            _connection     = connection;
             _save           = save;
             _friendsService = friendsService;
 
             // Flush any score that was queued while the player was offline
-            if (_isOnline && _save != null && _save.PendingLeaderboardScore >= 0)
-            {
-                _ = FlushPendingScoreAsync();
-            }
+            if (_isOnline) CatchUp();
+            if (_connection != null) _connection.WentOnline += CatchUp;
+        }
+
+        /// <summary>Sends what waited for a connection: the best offline score, and a name changed while offline.</summary>
+        void CatchUp()
+        {
+            if (_save == null) return;
+            if (_save.PendingLeaderboardScore >= 0) _ = FlushPendingScoreAsync();
+            if (!string.IsNullOrEmpty(_save.PendingPlayerName)) _ = SetPlayerNameAsync(_save.PendingPlayerName);
+        }
+
+        /// <summary>When the game is offline, asks the connection to try signing in again (it limits how often).</summary>
+        async Task ReconnectIfOfflineAsync(bool userAction)
+        {
+            if (!_isOnline && _connection != null) await _connection.TryReconnectAsync(userAction);
         }
 
         // ── Submit ──────────────────────────────────────────────────────────
@@ -73,54 +87,86 @@ namespace StackSurge.Meta
         /// Friend "overtaken" notifications only fire when this run is a new personal best.</param>
         public async Task SubmitScoreAsync(int score, int previousBest = -1)
         {
+            // Google's pre-launch robots play real runs; keep them off the leaderboard (not queued either).
+            if (PlayTestDevice.IsTestLab) return;
+
+            await ReconnectIfOfflineAsync(userAction: false);
             if (!_isOnline)
             {
-                // Queue the best score locally for later
-                if (_save != null && score > _save.PendingLeaderboardScore)
-                {
-                    _save.PendingLeaderboardScore = score;
-                    LocalProgress.Save(_save);
-                    Debug.Log($"[LeaderboardService] Offline — score {score} queued for later upload.");
-                }
+                QueueForLater(score);
                 return;
             }
 
-            await SubmitToCloudAsync(score, previousBest);
+            if (await SubmitToCloudAsync(score, previousBest))
+            {
+                if (_save != null && _save.PendingLeaderboardScore >= 0) _ = FlushPendingScoreAsync();
+            }
+            else
+            {
+                QueueForLater(score); // signed in but the connection dropped; sent with the next score or sign-in
+            }
+        }
+
+        /// <summary>Keeps the best score that couldn't be sent, for the next successful submit or sign-in.</summary>
+        void QueueForLater(int score)
+        {
+            if (_save == null || score <= _save.PendingLeaderboardScore) return;
+            _save.PendingLeaderboardScore = score;
+            LocalProgress.Save(_save);
+            Debug.Log($"[LeaderboardService] Score {score} queued for later upload.");
         }
 
         // ── Flush pending offline score ─────────────────────────────────────
+        bool _flushing;
+
         private async Task FlushPendingScoreAsync()
         {
-            if (_save == null || _save.PendingLeaderboardScore < 0) return;
+            if (_flushing || _save == null || _save.PendingLeaderboardScore < 0) return;
+            _flushing = true;
+            try
+            {
+                int pending = _save.PendingLeaderboardScore;
+                Debug.Log($"[LeaderboardService] Flushing queued score: {pending}");
 
-            int pending = _save.PendingLeaderboardScore;
-            Debug.Log($"[LeaderboardService] Flushing offline-queued score: {pending}");
+                // Previous best unknown for a queued score; skip friend notifications to avoid spurious pushes.
+                bool sent = await SubmitToCloudAsync(pending, previousBest: int.MaxValue);
 
-            // Previous best unknown for a queued score; skip friend notifications to avoid spurious pushes.
-            await SubmitToCloudAsync(pending, previousBest: int.MaxValue);
-
-            // Clear the queue only on success (SubmitToCloudAsync swallows its own exceptions)
-            _save.PendingLeaderboardScore = -1;
-            LocalProgress.Save(_save);
+                // Clear the queue only when every board took it, and only if no higher score was queued meanwhile.
+                if (sent && _save.PendingLeaderboardScore == pending)
+                {
+                    _save.PendingLeaderboardScore = -1;
+                    LocalProgress.Save(_save);
+                }
+            }
+            finally
+            {
+                _flushing = false;
+            }
         }
 
         // ── Internal submit ─────────────────────────────────────────────────
-        private async Task SubmitToCloudAsync(int score, int previousBest)
+        /// <summary>Sends the score to the daily, weekly and all-time boards. True when all three took it.</summary>
+        private async Task<bool> SubmitToCloudAsync(int score, int previousBest)
         {
+            bool allSent = true, allTimeSent = false;
             foreach (string leaderboardId in new[] { DailyLeaderboardId, WeeklyLeaderboardId, AllTimeLeaderboardId })
             {
                 try
                 {
                     await LeaderboardsService.Instance.AddPlayerScoreAsync(leaderboardId, score);
                     Debug.Log($"[LeaderboardService] Score {score} submitted to '{leaderboardId}'.");
+                    if (leaderboardId == AllTimeLeaderboardId) allTimeSent = true;
                 }
                 catch (Exception e)
                 {
+                    allSent = false;
                     Debug.LogWarning($"[LeaderboardService] Submit failed for '{leaderboardId}': " + e.Message);
                 }
             }
 
-            await NotifyOvertakenFriendsAsync(score, previousBest);
+            // The "you passed a friend" push is about the all-time board, so only once that board has the score.
+            if (allTimeSent) await NotifyOvertakenFriendsAsync(score, previousBest);
+            return allSent;
         }
 
         /// <summary>
@@ -180,6 +226,7 @@ namespace StackSurge.Meta
         /// </summary>
         public async Task<LeaderboardEntryData[]> GetTopScoresAsync(LeaderboardScope scope = LeaderboardScope.AllTime)
         {
+            await ReconnectIfOfflineAsync(userAction: true);
             if (!_isOnline) return null;
             try
             {
@@ -220,6 +267,7 @@ namespace StackSurge.Meta
             LeaderboardScope scope = LeaderboardScope.AllTime,
             List<string> friendPlayerIds = null)
         {
+            await ReconnectIfOfflineAsync(userAction: true);
             if (!_isOnline) return null;
 
             try
@@ -284,6 +332,7 @@ namespace StackSurge.Meta
         /// </summary>
         public async Task<LeaderboardEntryData?> GetPlayerEntryAsync(LeaderboardScope scope = LeaderboardScope.AllTime)
         {
+            await ReconnectIfOfflineAsync(userAction: true);
             if (!_isOnline) return null;
             try
             {
@@ -317,16 +366,28 @@ namespace StackSurge.Meta
         /// </summary>
         public async Task SetPlayerNameAsync(string name)
         {
-            if (!_isOnline) return;
+            if (!_isOnline)
+            {
+                RememberPendingName(name); // sent when the game next signs in
+                return;
+            }
             try
             {
                 await AuthenticationService.Instance.UpdatePlayerNameAsync(name);
                 Debug.Log("[LeaderboardService] Player name updated to: " + name);
+                RememberPendingName(""); // this name is the newest, whether it was typed now or waited offline
             }
             catch (Exception e)
             {
                 Debug.LogWarning("[LeaderboardService] Name update failed: " + e.Message);
             }
+        }
+
+        void RememberPendingName(string name)
+        {
+            if (_save == null || _save.PendingPlayerName == name) return;
+            _save.PendingPlayerName = name;
+            LocalProgress.Save(_save);
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────
