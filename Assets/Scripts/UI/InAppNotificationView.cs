@@ -140,10 +140,7 @@ namespace StackSurge.UI
 
             _bgImage = panelObj.AddComponent<Image>();
             _bgImage.color = new Color(0.08f, 0.10f, 0.16f, 0.95f);
-
-            Outline outline = panelObj.AddComponent<Outline>();
-            outline.effectColor = new Color(0.25f, 0.45f, 0.95f, 0.8f);
-            outline.effectDistance = new Vector2(2, -2);
+            UiSprites.ApplyRounded(_bgImage, 26f);
 
             HorizontalLayoutGroup layout = panelObj.AddComponent<HorizontalLayoutGroup>();
             layout.padding = new RectOffset(24, 24, 18, 18);
@@ -162,6 +159,8 @@ namespace StackSurge.UI
             iconLayout.minHeight = iconLayout.preferredHeight = 70;
             iconLayout.flexibleWidth = 0;
             _iconImage = iconObj.AddComponent<Image>();
+            _iconImage.sprite = UiSprites.Circle;
+            _iconImage.preserveAspect = true;
             _iconImage.color = new Color(0.3f, 0.6f, 1f, 1f);
             _iconImage.raycastTarget = false;
 

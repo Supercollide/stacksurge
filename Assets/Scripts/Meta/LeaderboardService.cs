@@ -12,7 +12,9 @@ namespace StackSurge.Meta
     /// <summary>
     /// Data returned per leaderboard row to the UI layer.
     /// Named *Data to avoid collision with the SDK's own LeaderboardEntry model.
+    /// Serializable so the leaderboard panel can keep the last list on the device.
     /// </summary>
+    [Serializable]
     public struct LeaderboardEntryData
     {
         public int    Rank;
@@ -136,6 +138,7 @@ namespace StackSurge.Meta
                 if (friendIds == null || friendIds.Count == 0) return;
 
                 var friendEntries = await GetFriendsScoresAsync(LeaderboardScope.AllTime, friendIds);
+                if (friendEntries == null) return; // couldn't load; try again on the next best
                 var passed = new List<LeaderboardEntryData>();
                 foreach (var friend in friendEntries)
                 {
@@ -171,9 +174,13 @@ namespace StackSurge.Meta
         }
 
         // ── Fetch top scores ────────────────────────────────────────────────
+        /// <summary>
+        /// Top scores for the scope. An empty array means the board has no scores yet; null means they could not be
+        /// loaded (offline or a service error), so the UI can tell "nobody has played" from "try again".
+        /// </summary>
         public async Task<LeaderboardEntryData[]> GetTopScoresAsync(LeaderboardScope scope = LeaderboardScope.AllTime)
         {
-            if (!_isOnline) return Array.Empty<LeaderboardEntryData>();
+            if (!_isOnline) return null;
             try
             {
                 var options = new GetScoresOptions { Limit = TopCount, Offset = 0 };
@@ -203,16 +210,17 @@ namespace StackSurge.Meta
             catch (Exception e)
             {
                 Debug.LogWarning("[LeaderboardService] Fetch failed: " + e.Message);
-                return Array.Empty<LeaderboardEntryData>();
+                return null;
             }
         }
 
         // ── Fetch friend scores ─────────────────────────────────────────────
+        /// <summary>Your score and your friends' scores, highest first. Empty = none yet; null = could not load.</summary>
         public async Task<LeaderboardEntryData[]> GetFriendsScoresAsync(
             LeaderboardScope scope = LeaderboardScope.AllTime,
             List<string> friendPlayerIds = null)
         {
-            if (!_isOnline) return Array.Empty<LeaderboardEntryData>();
+            if (!_isOnline) return null;
 
             try
             {
@@ -265,7 +273,7 @@ namespace StackSurge.Meta
             catch (Exception e)
             {
                 Debug.LogWarning("[LeaderboardService] GetFriendsScores failed: " + e.Message);
-                return Array.Empty<LeaderboardEntryData>();
+                return null;
             }
         }
 

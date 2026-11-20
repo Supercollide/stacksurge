@@ -32,6 +32,38 @@ namespace StackSurge.UI
         [SerializeField] private Color _busyColor = new Color(1f, 0.6f, 0.2f);
         [SerializeField] private Color _offlineColor = new Color(0.5f, 0.5f, 0.55f);
 
+        // The prefab's status line is 12pt. Its row is laid out by a layout group (so auto-size can't be used
+        // safely); 16 still fits the row next to the name.
+        const float MinActivityFontSize = 16f;
+
+        // The prefab's 100-wide action buttons only fit "Remove"/"Decline"/"Unblock" by shrinking them to ~17pt
+        // once the labels are padded. 120 fits every label at one shared size, so a row's two buttons match.
+        const float ActionButtonWidth = 120f;
+        const float ActionLabelSize = 21f;
+
+        private void Awake()
+        {
+            if (_activityText != null && _activityText.fontSize < MinActivityFontSize)
+                _activityText.fontSize = MinActivityFontSize;
+
+            FitActionButton(_acceptButton);
+            FitActionButton(_declineButton);
+            FitActionButton(_removeButton);
+            FitActionButton(_blockButton);
+        }
+
+        static void FitActionButton(Button button)
+        {
+            if (button == null) return;
+            var rect = (RectTransform)button.transform;
+            if (rect.sizeDelta.x < ActionButtonWidth) rect.sizeDelta = new Vector2(ActionButtonWidth, rect.sizeDelta.y);
+            var label = button.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label == null) return;
+            label.enableAutoSizing = true;
+            label.fontSizeMax = ActionLabelSize;
+            label.fontSize = ActionLabelSize;
+        }
+
 
 
         public void SetupFriend(

@@ -30,6 +30,20 @@ namespace StackSurge.UI
         private string _playerId;
         private Func<string, Task<FriendRequestResult>> _onAddFriend;
         private bool _busy;
+        private FriendRelationState _relation;
+        private bool _locked; // a request result or "requests off" is showing; later relation refreshes leave it alone
+        private float _scoreFontSize; // the prefab's score size, the most the score may grow back to
+
+        // Row layout (canvas units). The score gets a fixed-width column, so the Add Friend button lines up in every
+        // row whatever the score; the name stops before the button and is cut off with "…" if too long.
+        private const float ScoreRightInset = 14f; // the prefab's score box offset from the row's right edge
+        private const string ScoreColumnSample = "999,999"; // column fits six digits; longer scores shrink to fit
+        private const float ScoreMinFontSize = 16f;
+        private const float ButtonWidth = 156f;
+        private const float ButtonHeight = 46f;
+        private const float ButtonFontSize = 20f;
+        private const float GapAfterScore = 16f;
+        private const float GapAfterName = 12f;
 
         public string PlayerId => _playerId;
 
@@ -40,7 +54,8 @@ namespace StackSurge.UI
             Sprite bronze,
             int delayIndex,
             Func<string, Task<FriendRequestResult>> onAddFriend = null,
-            FriendRelationState relation = FriendRelationState.None)
+            FriendRelationState relation = FriendRelationState.None,
+            bool animate = true)
         {
             bool isPlayer = entry.IsCurrentPlayer;
             _playerId = entry.PlayerId;
@@ -69,15 +84,77 @@ namespace StackSurge.UI
             if (_scoreText != null)
                 _scoreText.text = ((int)entry.Score).ToString("N0", CultureInfo.InvariantCulture);
 
+            _locked = false;
             SetRelationState(isPlayer ? FriendRelationState.Self : relation);
+            LayoutRow();
 
+            if (!animate) return; // redrawn with fresher data in place; popping in again would read as a flicker
             transform.localScale = Vector3.one * 0.88f;
             transform.DOScale(1f, 0.28f).SetEase(Ease.OutBack).SetDelay(delayIndex * 0.055f).SetUpdate(true);
+        }
+
+        /// <summary>Applies a relationship that changed after the row was shown (friend list refreshed late).</summary>
+        public void UpdateRelation(FriendRelationState relation)
+        {
+            if (_locked || _busy || relation == _relation || _relation == FriendRelationState.Self) return;
+            SetRelationState(relation);
+            LayoutRow();
+        }
+
+        private void OnRectTransformDimensionsChange() => LayoutRow();
+
+        /// <summary>Places the Add Friend button left of the score column and fits the name into the space that remains.</summary>
+        private void LayoutRow()
+        {
+            var row = transform as RectTransform;
+            if (row == null || _nameText == null || _scoreText == null) return;
+            if (row.rect.width <= 0f) return; // not laid out yet; runs again when the list sizes the row
+
+            if (_scoreFontSize <= 0f) _scoreFontSize = _scoreText.enableAutoSizing ? _scoreText.fontSizeMax : _scoreText.fontSize;
+            _scoreText.enableAutoSizing = true;
+            _scoreText.fontSizeMax = _scoreFontSize;
+            _scoreText.fontSizeMin = Mathf.Min(_scoreFontSize, ScoreMinFontSize);
+            _scoreText.textWrappingMode = TextWrappingModes.NoWrap;
+            float scoreColumn = Mathf.Ceil(_scoreText.GetPreferredValues(ScoreColumnSample).x) + 2f;
+            var score = _scoreText.rectTransform;
+            score.sizeDelta = new Vector2(scoreColumn, score.sizeDelta.y);
+
+            float fromRight = ScoreRightInset + scoreColumn + GapAfterScore;
+
+            if (_addFriendButton != null)
+            {
+                var button = (RectTransform)_addFriendButton.transform;
+                if (button.parent != transform) button.SetParent(transform, false); // the prefab nests it under the name
+                button.anchorMin = button.anchorMax = new Vector2(1f, 0.5f);
+                button.pivot = new Vector2(1f, 0.5f);
+                button.sizeDelta = new Vector2(ButtonWidth, ButtonHeight);
+                button.anchoredPosition = new Vector2(-fromRight, 0f);
+
+                var label = _addFriendButton.GetComponentInChildren<TextMeshProUGUI>(true);
+                if (label != null)
+                {
+                    label.enableAutoSizing = true;
+                    label.fontSizeMax = ButtonFontSize;
+                    label.fontSizeMin = Mathf.Min(label.fontSizeMin, 14f);
+                    label.textWrappingMode = TextWrappingModes.NoWrap;
+                }
+
+                if (_addFriendButton.gameObject.activeSelf) fromRight += ButtonWidth;
+            }
+
+            var name = _nameText.rectTransform;
+            float left = name.offsetMin.x, bottom = name.offsetMin.y, top = name.offsetMax.y;
+            name.anchorMax = new Vector2(1f, name.anchorMax.y);
+            name.offsetMin = new Vector2(left, bottom);
+            name.offsetMax = new Vector2(-(fromRight + GapAfterName), top);
+            _nameText.textWrappingMode = TextWrappingModes.NoWrap;
+            _nameText.overflowMode = TextOverflowModes.Ellipsis;
         }
 
         /// <summary>Applies the button state for the current relationship with this row's player.</summary>
         public void SetRelationState(FriendRelationState relation)
         {
+            _relation = relation;
             if (_addFriendButton == null) return;
 
             if (_onAddFriend == null || relation == FriendRelationState.Self || relation == FriendRelationState.Blocked)
@@ -111,8 +188,11 @@ namespace StackSurge.UI
         /// <summary>Hides the button when the target has turned off incoming friend requests.</summary>
         public void SetTargetDisallowsRequests()
         {
-            if (_addFriendButton == null) return;
-            Style("Closed", DisabledColor, interactable: false);
+            if (_relation != FriendRelationState.None) return; // friends / pending / you: their button already says so
+            _locked = true;
+            if (_addFriendButton == null || _busy) return;
+            _addFriendButton.gameObject.SetActive(false);
+            LayoutRow();
         }
 
         private async Task HandleAddClickedAsync()
@@ -131,15 +211,20 @@ namespace StackSurge.UI
 
             _busy = false;
             if (this == null || _addFriendButton == null) return;
+            _locked = true;
 
             switch (result)
             {
                 case FriendRequestResult.Sent:            Style("Sent!", DisabledColor, false); break;
                 case FriendRequestResult.AlreadyFriends:  Style("Friends", DisabledColor, false); break;
                 case FriendRequestResult.AlreadyPending:  Style("Pending", DisabledColor, false); break;
-                case FriendRequestResult.TargetDisallows: Style("Closed", DisabledColor, false); break;
-                case FriendRequestResult.Blocked:         _addFriendButton.gameObject.SetActive(false); break;
+                case FriendRequestResult.TargetDisallows:
+                case FriendRequestResult.Blocked:
+                    _addFriendButton.gameObject.SetActive(false); // they don't take requests from you; nothing to offer
+                    LayoutRow();
+                    break;
                 default:
+                    _locked = false;
                     Style("Retry", ErrorColor, true);
                     _addFriendButton.onClick.RemoveAllListeners();
                     _addFriendButton.onClick.AddListener(() => _ = HandleAddClickedAsync());

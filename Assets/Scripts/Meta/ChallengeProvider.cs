@@ -11,10 +11,19 @@ namespace StackSurge.Meta
 {
     /// <summary>
     /// Async service that manages the full challenge lifecycle:
-    /// authentication → Remote Config fetch → Cloud Save load/save → offline fallback.
+    /// authentication → Remote Config fetch → today's set → Cloud Save load/save → offline fallback.
+    ///
+    /// Where the day's challenges come from, first match wins:
+    /// 1. Challenge assets assigned in the Inspector (a fixed set, every day).
+    /// 2. Remote Config "daily_challenges": a fixed set, every day.
+    /// 3. Remote Config "challenge_pool", or the built-in <see cref="ChallengePool"/>: one easy, one medium and one hard
+    ///    picked per UTC day, the same for every player.
+    /// Finishing all of a day's challenges adds <see cref="AllDoneBonusPoints"/> to the next run.
     /// </summary>
     public class ChallengeProvider
     {
+        public const int AllDoneBonusPoints = 2000; // on top of the three rewards (1,000 / 2,000 / 3,000)
+
         // ── Public state ──────────────────────────────────────────────
         public ChallengeDefinition[] ActiveChallenges { get; private set; } = Array.Empty<ChallengeDefinition>();
         public int[] Progress { get; private set; } = Array.Empty<int>();
@@ -23,21 +32,31 @@ namespace StackSurge.Meta
         public bool IsOnline { get; private set; }
         public int PendingRewardPoints { get; private set; }
 
+        /// <summary>True once today's all-done bonus has been added (it's added the moment the last one completes).</summary>
+        public bool AllDoneBonusGranted =>
+            !string.IsNullOrEmpty(_save?.ChallengeBonusDate) && _save.ChallengeBonusDate == _save.ChallengeSetDate;
+
         // ── Private ───────────────────────────────────────────────────
         SaveData _save;
         bool _initialised;
+        ChallengeDefinition[] _fixedSet;           // set when the day's challenges don't rotate (Inspector or Remote Config)
+        ChallengeDefinition[] _pool = Array.Empty<ChallengeDefinition>();
 
         const string CloudKey_Progress = "challenge_progress";
         const string CloudKey_Bits = "challenge_bits";
         const string CloudKey_Claimed = "challenge_claimed";
         const string CloudKey_SetDate = "challenge_set_date";
+        const string CloudKey_SetIds = "challenge_set_ids";
+        const string CloudKey_BonusDate = "challenge_bonus_date";
+
+        static string TodayUtc => DateTime.UtcNow.Date.ToString("yyyy-MM-dd");
 
         // ── Remote Config fetch attributes (required by the API) ─────
         struct UserAttributes { }
         struct AppAttributes { }
 
         // ── Initialise ───────────────────────────────────────────────
-        public async Task InitializeAsync(SaveData save, ChallengeDefinition[] fallbackAssets)
+        public async Task InitializeAsync(SaveData save, ChallengeDefinition[] fixedAssets)
         {
             _save = save;
 
@@ -58,83 +77,88 @@ namespace StackSurge.Meta
                 IsOnline = false;
             }
 
-            // Fetch challenge definitions
-            await FetchDefinitionsAsync(fallbackAssets);
+            // Where today's challenges come from, then which ones they are.
+            if (fixedAssets != null && fixedAssets.Length > 0) _fixedSet = fixedAssets;
+            else await FetchRemoteDefinitionsAsync();
+            if (_fixedSet == null && _pool.Length == 0) _pool = ChallengePool.ToDefinitions(ChallengePool.BuiltIn());
+            ActiveChallenges = PickFor(TodayUtc);
 
             // Load progress (cloud or local)
             await LoadProgressAsync();
 
-            // Check daily rotation
-            CheckDailyRotation();
+            // A new day, or a different set than the saved progress belongs to, starts fresh.
+            EnsureToday();
 
             _initialised = true;
         }
 
-        // ── Fetch definitions from Remote Config (or use fallback) ───
-        async Task FetchDefinitionsAsync(ChallengeDefinition[] fallbackAssets)
+        // ── Remote Config: a fixed set or a replacement pool ─────────
+        async Task FetchRemoteDefinitionsAsync()
         {
-            if (IsOnline)
+            if (!IsOnline) return;
+            try
             {
-                try
-                {
-                    RemoteConfigService.Instance.FetchCompleted += ApplyRemoteConfig;
-                    await RemoteConfigService.Instance.FetchConfigsAsync(new UserAttributes(), new AppAttributes());
-                    RemoteConfigService.Instance.FetchCompleted -= ApplyRemoteConfig;
-
-                    // If remote fetch populated challenges, we're done
-                    if (ActiveChallenges.Length > 0) return;
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning("[ChallengeProvider] Remote Config fetch failed: " + e.Message);
-                    RemoteConfigService.Instance.FetchCompleted -= ApplyRemoteConfig;
-                }
+                RemoteConfigService.Instance.FetchCompleted += ApplyRemoteConfig;
+                await RemoteConfigService.Instance.FetchConfigsAsync(new UserAttributes(), new AppAttributes());
             }
-
-            // Fallback: use inspector assets or hardcoded defaults
-            ActiveChallenges = fallbackAssets != null && fallbackAssets.Length > 0
-                ? fallbackAssets
-                : BuildDefaultChallenges();
+            catch (Exception e)
+            {
+                Debug.LogWarning("[ChallengeProvider] Remote Config fetch failed: " + e.Message);
+            }
+            finally
+            {
+                RemoteConfigService.Instance.FetchCompleted -= ApplyRemoteConfig;
+            }
         }
 
         void ApplyRemoteConfig(ConfigResponse response)
         {
+            var fixedSet = ReadChallengeList("daily_challenges");
+            if (fixedSet != null) _fixedSet = fixedSet;
+            var pool = ReadChallengeList("challenge_pool");
+            if (pool != null) _pool = pool;
+        }
+
+        static ChallengeDefinition[] ReadChallengeList(string key)
+        {
             try
             {
-                string json = RemoteConfigService.Instance.appConfig.GetJson("daily_challenges", "");
-                if (string.IsNullOrEmpty(json))
-                {
-                    Debug.Log("[ChallengeProvider] No 'daily_challenges' key in Remote Config.");
-                    return;
-                }
+                string json = RemoteConfigService.Instance.appConfig.GetJson(key, "");
+                if (string.IsNullOrEmpty(json)) return null;
 
                 // JsonUtility needs a wrapper object for arrays
-                string wrapped = "{\"Items\":" + json + "}";
-                var list = JsonUtility.FromJson<ChallengeDataList>(wrapped);
-
+                var list = JsonUtility.FromJson<ChallengeDataList>("{\"Items\":" + json + "}");
                 if (list?.Items == null || list.Items.Length == 0)
                 {
-                    Debug.LogWarning("[ChallengeProvider] Remote Config JSON parsed but no challenges found.");
-                    return;
+                    Debug.LogWarning($"[ChallengeProvider] Remote Config '{key}' parsed but has no challenges.");
+                    return null;
                 }
-
-                var defs = new ChallengeDefinition[list.Items.Length];
-                for (int i = 0; i < list.Items.Length; i++)
-                    defs[i] = ChallengeDefinition.FromData(list.Items[i]);
-
-                ActiveChallenges = defs;
-                Debug.Log($"[ChallengeProvider] Loaded {defs.Length} challenges from Remote Config.");
+                Debug.Log($"[ChallengeProvider] Loaded {list.Items.Length} challenges from Remote Config '{key}'.");
+                return ChallengePool.ToDefinitions(list.Items);
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[ChallengeProvider] Failed to parse Remote Config JSON: " + e.Message);
+                Debug.LogWarning($"[ChallengeProvider] Failed to parse Remote Config '{key}': " + e.Message);
+                return null;
             }
+        }
+
+        ChallengeDefinition[] PickFor(string day) => _fixedSet ?? ChallengePool.PickForDay(_pool, day);
+
+        static string SetIds(ChallengeDefinition[] set)
+        {
+            var ids = new string[set.Length];
+            for (int i = 0; i < set.Length; i++) ids[i] = string.IsNullOrEmpty(set[i].Id) ? set[i].Title : set[i].Id;
+            return string.Join(",", ids);
         }
 
         // ── Load progress from Cloud Save or local ───────────────────
         async Task LoadProgressAsync()
         {
             int count = ActiveChallenges.Length;
+            // Claimed points wait in the local save until the next run starts; restore them on every launch
+            // (the signed-in path used to skip this, so claimed points were lost if the app restarted first).
+            PendingRewardPoints = _save.PendingRewardPoints;
 
             if (IsOnline)
             {
@@ -145,22 +169,26 @@ namespace StackSurge.Meta
                         CloudKey_Progress,
                         CloudKey_Bits,
                         CloudKey_Claimed,
-                        CloudKey_SetDate
+                        CloudKey_SetDate,
+                        CloudKey_SetIds,
+                        CloudKey_BonusDate
                     };
 
                     var data = await CloudSaveService.Instance.Data.Player.LoadAsync(keys);
 
                     Progress = DeserializeIntArray(data, CloudKey_Progress, count);
                     CompletionBits = DeserializeIntArray(data, CloudKey_Bits, count);
-                    Claimed = DeserializeBoolArray(data, CloudKey_Bits, CloudKey_Claimed, count);
+                    Claimed = DeserializeBoolArray(data, CloudKey_Claimed, count);
 
                     if (data.TryGetValue(CloudKey_SetDate, out var dateItem))
                         _save.ChallengeSetDate = dateItem.Value.GetAs<string>() ?? "";
+                    if (data.TryGetValue(CloudKey_SetIds, out var idsItem))
+                        _save.ChallengeSetIds = idsItem.Value.GetAs<string>() ?? "";
+                    if (data.TryGetValue(CloudKey_BonusDate, out var bonusItem))
+                        _save.ChallengeBonusDate = bonusItem.Value.GetAs<string>() ?? "";
 
                     // Sync to local save as backup
-                    _save.ChallengeProgress = (int[])Progress.Clone();
-                    _save.ChallengeBits = (int[])CompletionBits.Clone();
-                    LocalProgress.Save(_save);
+                    StoreLocally();
 
                     Debug.Log("[ChallengeProvider] Progress loaded from Cloud Save.");
                     return;
@@ -172,30 +200,35 @@ namespace StackSurge.Meta
             }
 
             // Fallback to local
-            EnsureArrays(count);
             Progress = EnsureLength(_save.ChallengeProgress, count);
             CompletionBits = EnsureLength(_save.ChallengeBits, count);
-            Claimed = new bool[count];
-            PendingRewardPoints = _save.PendingRewardPoints;
+            Claimed = EnsureLength(_save.ChallengeClaimed, count); // kept locally too, so an offline claim can't repeat
         }
 
-        // ── Daily rotation check ─────────────────────────────────────
-        void CheckDailyRotation()
+        // ── Daily rotation ───────────────────────────────────────────
+        /// <summary>
+        /// Moves to today's challenges when the UTC day has changed (also mid-session: called as each run starts), or
+        /// when the saved progress belongs to a different set. Returns true when progress was reset.
+        /// </summary>
+        public bool EnsureToday()
         {
-            string today = DateTime.UtcNow.Date.ToString("yyyy-MM-dd");
-            if (_save.ChallengeSetDate != today)
-            {
-                Debug.Log($"[ChallengeProvider] Daily rotation: {_save.ChallengeSetDate} → {today}");
-                int count = ActiveChallenges.Length;
-                Progress = new int[count];
-                CompletionBits = new int[count];
-                Claimed = new bool[count];
+            if (_save == null) return false;
+            string today = TodayUtc;
+            if (_save.ChallengeSetDate != today) ActiveChallenges = PickFor(today);
 
-                _save.ChallengeSetDate = today;
-                _save.ChallengeProgress = new int[count];
-                _save.ChallengeBits = new int[count];
-                LocalProgress.Save(_save);
-            }
+            string ids = SetIds(ActiveChallenges);
+            if (_save.ChallengeSetDate == today && _save.ChallengeSetIds == ids &&
+                Progress.Length == ActiveChallenges.Length) return false;
+
+            Debug.Log($"[ChallengeProvider] New challenge set for {today}: {ids}");
+            int count = ActiveChallenges.Length;
+            Progress = new int[count];
+            CompletionBits = new int[count];
+            Claimed = new bool[count];
+            _save.ChallengeSetDate = today;
+            _save.ChallengeSetIds = ids;
+            StoreLocally();
+            return true;
         }
 
         // ── Record progress for a specific challenge ─────────────────
@@ -209,7 +242,27 @@ namespace StackSurge.Meta
             if (Progress[index] >= ActiveChallenges[index].TargetValue)
             {
                 CompletionBits[index] = 1;
+                GrantAllDoneBonusIfEarned();
             }
+        }
+
+        /// <summary>The moment the day's last challenge completes, the all-done bonus waits for the next run.</summary>
+        void GrantAllDoneBonusIfEarned()
+        {
+            if (ActiveChallenges.Length == 0 || AllDoneBonusGranted) return;
+            foreach (int bit in CompletionBits)
+                if (bit == 0) return;
+            _save.ChallengeBonusDate = _save.ChallengeSetDate;
+            AddBonusPoints(AllDoneBonusPoints);
+        }
+
+        /// <summary>Points that start the next run (claimed challenges, the all-done bonus, the 7-day streak).</summary>
+        public void AddBonusPoints(int points)
+        {
+            if (points <= 0) return;
+            PendingRewardPoints += points;
+            _save.PendingRewardPoints = PendingRewardPoints;
+            LocalProgress.Save(_save);
         }
 
         // ── Claim reward ─────────────────────────────────────────────
@@ -219,9 +272,8 @@ namespace StackSurge.Meta
             if (CompletionBits[index] == 0 || Claimed[index]) return false;
 
             Claimed[index] = true;
-            PendingRewardPoints += ActiveChallenges[index].RewardPoints;
-            _save.PendingRewardPoints = PendingRewardPoints;
-            LocalProgress.Save(_save);
+            _save.ChallengeClaimed = (bool[])Claimed.Clone();
+            AddBonusPoints(ActiveChallenges[index].RewardPoints);
             return true;
         }
 
@@ -239,9 +291,7 @@ namespace StackSurge.Meta
         public async Task SaveAsync()
         {
             // Always persist locally
-            _save.ChallengeProgress = (int[])Progress.Clone();
-            _save.ChallengeBits = (int[])CompletionBits.Clone();
-            LocalProgress.Save(_save);
+            StoreLocally();
 
             if (!IsOnline) return;
 
@@ -252,7 +302,9 @@ namespace StackSurge.Meta
                     { CloudKey_Progress, JsonUtility.ToJson(new IntArrayWrapper { Values = Progress }) },
                     { CloudKey_Bits, JsonUtility.ToJson(new IntArrayWrapper { Values = CompletionBits }) },
                     { CloudKey_Claimed, JsonUtility.ToJson(new BoolArrayWrapper { Values = Claimed }) },
-                    { CloudKey_SetDate, _save.ChallengeSetDate }
+                    { CloudKey_SetDate, _save.ChallengeSetDate },
+                    { CloudKey_SetIds, _save.ChallengeSetIds ?? "" },
+                    { CloudKey_BonusDate, _save.ChallengeBonusDate ?? "" }
                 };
 
                 await CloudSaveService.Instance.Data.Player.SaveAsync(data);
@@ -262,6 +314,14 @@ namespace StackSurge.Meta
             {
                 Debug.LogWarning("[ChallengeProvider] Cloud Save write failed: " + e.Message);
             }
+        }
+
+        void StoreLocally()
+        {
+            _save.ChallengeProgress = (int[])Progress.Clone();
+            _save.ChallengeBits = (int[])CompletionBits.Clone();
+            _save.ChallengeClaimed = (bool[])Claimed.Clone();
+            LocalProgress.Save(_save);
         }
 
         // ── Get display data for the UI ──────────────────────────────
@@ -275,6 +335,8 @@ namespace StackSurge.Meta
                 {
                     Title = def.Title,
                     Description = def.Description,
+                    Type = def.Type,
+                    Difficulty = def.Difficulty,
                     Progress = Mathf.Min(Progress[i], def.TargetValue),
                     TargetValue = def.TargetValue,
                     Completed = CompletionBits[i] != 0,
@@ -295,43 +357,11 @@ namespace StackSurge.Meta
             return midnight - now;
         }
 
-        // ── Default challenges (offline fallback) ────────────────────
-        static ChallengeDefinition[] BuildDefaultChallenges()
-        {
-            ChallengeDefinition C(string id, string title, string desc, ChallengeType ty, int target, int reward)
-            {
-                var c = ScriptableObject.CreateInstance<ChallengeDefinition>();
-                c.Id = id;
-                c.Title = title;
-                c.Description = desc;
-                c.Type = ty;
-                c.TargetValue = target;
-                c.RewardPoints = reward;
-                c.Category = "daily";
-                return c;
-            }
-
-            return new[]
-            {
-                C("score_1000", "Score 1000", "Reach 1,000 points in one run.", ChallengeType.ScoreInRun, 1000, 500),
-                C("survive_180", "Survivalist", "Stay alive for 3 minutes.", ChallengeType.SurviveSeconds, 180, 500),
-                C("combo_5", "Combo Hunter", "Reach a x5 combo multiplier.", ChallengeType.MaxComboMultiplier, 5, 500)
-            };
-        }
-
         // ── Helpers ──────────────────────────────────────────────────
-        void EnsureArrays(int count)
-        {
-            if (_save.ChallengeProgress == null || _save.ChallengeProgress.Length < count)
-                _save.ChallengeProgress = new int[count];
-            if (_save.ChallengeBits == null || _save.ChallengeBits.Length < count)
-                _save.ChallengeBits = new int[count];
-        }
-
-        static int[] EnsureLength(int[] arr, int len)
+        static T[] EnsureLength<T>(T[] arr, int len)
         {
             if (arr != null && arr.Length >= len) return arr;
-            var n = new int[len];
+            var n = new T[len];
             if (arr != null) Array.Copy(arr, n, Math.Min(arr.Length, len));
             return n;
         }
@@ -351,7 +381,7 @@ namespace StackSurge.Meta
             return new int[count];
         }
 
-        static bool[] DeserializeBoolArray(Dictionary<string, Unity.Services.CloudSave.Models.Item> data, string bitsKey, string key, int count)
+        static bool[] DeserializeBoolArray(Dictionary<string, Unity.Services.CloudSave.Models.Item> data, string key, int count)
         {
             if (data.TryGetValue(key, out var item))
             {

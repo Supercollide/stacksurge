@@ -130,148 +130,441 @@ namespace StackSurge.Meta
             if (_playerNameInput != null)
                 _playerNameInput.text = _getPlayerName?.Invoke() ?? "";
 
+            LoadSavedBoard();
             RefreshLeaderboardScopeUi();
         }
 
         // --- REFRESH LOGIC ---
+        // Opening the panel shows the last list for that tab straight away (kept in memory; All-time Global is also kept
+        // on the device) and swaps in fresh scores when they arrive. With nothing saved yet, placeholder rows hold the
+        // space. Friend states and the "requests off" lookup fill in after the rows are already on screen.
+
+        private struct BoardSnapshot
+        {
+            public LeaderboardEntryData[] Entries;
+            public bool HasPlayerEntry;             // your own entry, for when you're outside the top list
+            public LeaderboardEntryData PlayerEntry;
+        }
+
+        [Serializable]
+        private class SavedBoard
+        {
+            public LeaderboardEntryData[] entries;
+            public bool hasPlayerEntry;
+            public LeaderboardEntryData playerEntry;
+            public string[] requestsOff;
+        }
+
+        private const string SavedBoardKey = "LeaderboardCache.AllTimeGlobal";
+        private const int PlaceholderRowCount = 6;
+        private static readonly float[] PlaceholderNameWidths = { 250f, 190f, 220f, 170f, 240f, 200f };
+
+        private readonly Dictionary<(LeaderboardScope, LeaderboardFilterMode), BoardSnapshot> _boards =
+            new Dictionary<(LeaderboardScope, LeaderboardFilterMode), BoardSnapshot>();
+        private readonly HashSet<string> _requestsOff = new HashSet<string>(); // players known to have friend requests off
+        private readonly List<LeaderboardRowView> _rows = new List<LeaderboardRowView>();
+        private bool _savedBoardLoaded;
+        private int _lastFriendCount = -1;
+
         public async Task RefreshLeaderboard()
         {
             if (_leaderboardRowContainer == null) return;
 
             // Claim this refresh slot; any older in-flight call will see a stale generation and abort.
             int generation = ++_refreshGeneration;
+            LeaderboardScope scope = _activeScope;
+            LeaderboardFilterMode filter = _activeFilter;
+            LoadSavedBoard();
 
-            // Clear existing rows
-            foreach (Transform child in _leaderboardRowContainer)
-                Destroy(child.gameObject);
+            bool showingSaved = _boards.TryGetValue((scope, filter), out BoardSnapshot saved);
+            if (showingSaved) ShowBoard(saved, scope, filter, animate: true);
+            else ShowLoading(scope);
 
-            _leaderboardStatusText.text = _activeFilter == LeaderboardFilterMode.FriendsOnly
-                ? $"Loading {_activeScope.ToString().ToLower()} friend scores..."
-                : $"Loading {_activeScope.ToString().ToLower()} scores...";
-            _leaderboardStatusText.gameObject.SetActive(true);
+            // Relationship states (Friends / Pending on the Add Friend buttons) refresh alongside the scores.
+            Task friendsRefresh = RefreshFriendsSafeAsync();
+            BoardSnapshot? fresh = await FetchBoardAsync(scope, filter);
+            if (generation != _refreshGeneration) return; // another tab was picked meanwhile
 
-            // Make sure relationship states (Friends / Pending) are current before rows are built.
-            if (_refreshFriends != null)
+            if (fresh.HasValue)
             {
-                try { await _refreshFriends(); } catch { /* non-critical */ }
+                StoreBoard(scope, filter, fresh.Value);
+                if (!showingSaved || !SameBoard(saved, fresh.Value))
+                    ShowBoard(fresh.Value, scope, filter, animate: !showingSaved);
+
+                // Friends-relative ranks are not comparable across sessions; only track global rank drops.
+                if (filter == LeaderboardFilterMode.Global && YourRank(fresh.Value) is int rank)
+                    NotificationService.Instance?.CheckAndNotifyRankDrop(rank, scope, $"{scope} Leaderboard");
             }
-
-            LeaderboardEntryData[] entries = Array.Empty<LeaderboardEntryData>();
-            if (_activeFilter == LeaderboardFilterMode.FriendsOnly && _getFriendsScores != null && _getFriendIds != null)
+            else if (!showingSaved)
             {
-                try
+                ShowMessage("Couldn't load scores.\nCheck your connection and try again.", retry: true);
+            }
+            // A failed refresh over a saved list keeps the saved list rather than replacing it with an error.
+
+            await friendsRefresh;
+            if (generation != _refreshGeneration) return;
+            foreach (var row in _rows)
+                if (row != null) row.UpdateRelation(RelationFor(row.PlayerId));
+
+            if (fresh.HasValue) _ = ApplyTargetPreferencesAsync(fresh.Value.Entries, generation);
+        }
+
+        /// <summary>
+        /// Loads the selected tab in the background so the next open shows it straight away. Called once services
+        /// are up and after a score is submitted. The open panel refreshes itself, so this does nothing then.
+        /// </summary>
+        public void Prefetch()
+        {
+            if (IsOpen || (_getLeaderboardScores == null && _getFriendsScores == null)) return;
+            _ = PrefetchAsync(_activeScope, _activeFilter);
+        }
+
+        private async Task<BoardSnapshot?> PrefetchAsync(LeaderboardScope scope, LeaderboardFilterMode filter)
+        {
+            LoadSavedBoard();
+            BoardSnapshot? board = await FetchBoardAsync(scope, filter);
+            if (board.HasValue) StoreBoard(scope, filter, board.Value);
+            return board;
+        }
+
+        /// <summary>
+        /// After a score is submitted: reloads All-time Global (and the selected tab, if different and the panel is
+        /// closed) so the next open shows the new score. Returns your All-time rank, or null if it couldn't be loaded,
+        /// so a stale rank from before the run is never shown.
+        /// </summary>
+        public async Task<int?> RefreshAfterSubmitAsync()
+        {
+            var allTime = (LeaderboardScope.AllTime, LeaderboardFilterMode.Global);
+            Task other = (_activeScope, _activeFilter) != allTime && !IsOpen
+                ? PrefetchAsync(_activeScope, _activeFilter)
+                : Task.CompletedTask;
+            BoardSnapshot? board = await PrefetchAsync(LeaderboardScope.AllTime, LeaderboardFilterMode.Global);
+            await other;
+            return board.HasValue ? YourRank(board.Value) : null;
+        }
+
+        /// <summary>Scores for one tab; null when they could not be loaded (an empty board is a real, empty result).</summary>
+        private async Task<BoardSnapshot?> FetchBoardAsync(LeaderboardScope scope, LeaderboardFilterMode filter)
+        {
+            // Your own entry is only needed when you're outside the top list; start it now so it runs alongside.
+            Task<LeaderboardEntryData?> playerTask = filter == LeaderboardFilterMode.Global && _getPlayerEntry != null
+                ? GetPlayerEntrySafeAsync(scope)
+                : null;
+
+            LeaderboardEntryData[] entries = null;
+            try
+            {
+                if (filter == LeaderboardFilterMode.FriendsOnly && _getFriendsScores != null && _getFriendIds != null)
                 {
                     List<string> friendIds = await _getFriendIds();
-                    entries = await _getFriendsScores(_activeScope, friendIds);
+                    _lastFriendCount = friendIds?.Count ?? 0;
+                    entries = await _getFriendsScores(scope, friendIds);
                 }
-                catch { entries = Array.Empty<LeaderboardEntryData>(); }
-            }
-            else if (_getLeaderboardScores != null)
-            {
-                try { entries = await _getLeaderboardScores(_activeScope); }
-                catch { entries = Array.Empty<LeaderboardEntryData>(); }
-            }
-
-            // Another tab was clicked while we were awaiting – discard these results.
-            if (generation != _refreshGeneration) return;
-
-            _leaderboardStatusText.gameObject.SetActive(false);
-
-            // Find current player in fetched entries list
-            LeaderboardEntryData? currentInList = null;
-            for (int i = 0; i < entries.Length; i++)
-            {
-                if (entries[i].IsCurrentPlayer)
+                else if (_getLeaderboardScores != null)
                 {
-                    currentInList = entries[i];
-                    break;
+                    entries = await _getLeaderboardScores(scope);
                 }
             }
-
-            int? displayRank = null;
-            LeaderboardEntryData? globalPlayerEntry = null;
-
-            if (_activeFilter == LeaderboardFilterMode.FriendsOnly)
+            catch (Exception e)
             {
-                // In Friends mode, rank is relative among friends
-                if (currentInList.HasValue)
+                Debug.LogWarning("[LeaderboardManager] Loading scores failed: " + e.Message);
+                entries = null;
+            }
+            if (entries == null) return null;
+
+            var board = new BoardSnapshot { Entries = entries };
+            if (playerTask != null && IndexOfCurrentPlayer(entries) < 0)
+            {
+                LeaderboardEntryData? me = await playerTask;
+                if (me.HasValue)
                 {
-                    displayRank = currentInList.Value.Rank;
+                    board.HasPlayerEntry = true;
+                    board.PlayerEntry = me.Value;
                 }
             }
-            else
-            {
-                // In Global mode, fetch global rank even if player is outside top 15
-                if (_getPlayerEntry != null)
-                {
-                    try { globalPlayerEntry = await _getPlayerEntry(_activeScope); }
-                    catch { /* swallow – non-critical */ }
-                }
+            return board;
+        }
 
-                if (generation != _refreshGeneration) return;
+        private async Task<LeaderboardEntryData?> GetPlayerEntrySafeAsync(LeaderboardScope scope)
+        {
+            try { return await _getPlayerEntry(scope); }
+            catch { return null; } // non-critical: only "Your position" and your row below the list depend on it
+        }
 
-                if (currentInList.HasValue)
-                    displayRank = currentInList.Value.Rank;
-                else if (globalPlayerEntry.HasValue)
-                    displayRank = globalPlayerEntry.Value.Rank;
-            }
+        private async Task RefreshFriendsSafeAsync()
+        {
+            if (_refreshFriends == null) return;
+            try { await _refreshFriends(); }
+            catch { /* non-critical: rows keep their last known relationship */ }
+        }
 
-            // Friends-relative ranks are not comparable across sessions; only track global rank drops.
-            if (displayRank.HasValue && _activeFilter == LeaderboardFilterMode.Global)
-            {
-                NotificationService.Instance?.CheckAndNotifyRankDrop(displayRank.Value, _activeScope, $"{_activeScope} Leaderboard");
-            }
-
-            // Populate "Your position" header
+        private void ShowBoard(BoardSnapshot board, LeaderboardScope scope, LeaderboardFilterMode filter, bool animate)
+        {
+            ClearRows();
+            int? rank = YourRank(board);
             if (_yourPositionText != null)
-            {
-                _yourPositionText.text = displayRank.HasValue
-                    ? $"Your position: #{displayRank.Value}"
-                    : "Your position: —";
-            }
+                _yourPositionText.text = rank.HasValue ? $"Your position: #{rank.Value}" : "Your position: not ranked yet";
 
-            if (entries.Length == 0)
+            if (board.Entries.Length == 0)
             {
-                _leaderboardStatusText.gameObject.SetActive(true);
-                _leaderboardStatusText.text = _activeFilter == LeaderboardFilterMode.FriendsOnly
-                    ? "No friend scores available."
-                    : "Could not load scores.";
+                ShowMessage(EmptyMessage(scope, filter), retry: false);
                 return;
             }
 
-            // Build rows
-            var rows = new List<LeaderboardRowView>(entries.Length + 1);
-            for (int i = 0; i < entries.Length; i++)
-            {
-                var row = Instantiate(_rowPrefab, _leaderboardRowContainer, false);
-                row.Setup(entries[i], _goldMedal, _silverMedal, _bronzeMedal, i, _onAddFriend, RelationFor(entries[i]));
-                rows.Add(row);
-            }
+            HideMessage();
+            for (int i = 0; i < board.Entries.Length; i++)
+                AddRow(board.Entries[i], i, RelationFor(board.Entries[i]), animate);
 
-            // In Global mode, if player is outside top 15, append overflow row as #16
-            if (_activeFilter == LeaderboardFilterMode.Global && !currentInList.HasValue && globalPlayerEntry.HasValue)
-            {
-                var overflowRow = Instantiate(_rowPrefab, _leaderboardRowContainer, false);
-                overflowRow.Setup(globalPlayerEntry.Value, _goldMedal, _silverMedal, _bronzeMedal, entries.Length, _onAddFriend, FriendRelationState.Self);
-                rows.Add(overflowRow);
-            }
-
-            _ = ApplyTargetPreferencesAsync(rows, entries, generation);
+            // Global: when you're outside the top list, your own row goes underneath it.
+            if (filter == LeaderboardFilterMode.Global && board.HasPlayerEntry && IndexOfCurrentPlayer(board.Entries) < 0)
+                AddRow(board.PlayerEntry, board.Entries.Length, FriendRelationState.Self, animate);
         }
 
-        private FriendRelationState RelationFor(LeaderboardEntryData entry)
+        private void AddRow(LeaderboardEntryData entry, int index, FriendRelationState relation, bool animate)
         {
-            if (entry.IsCurrentPlayer) return FriendRelationState.Self;
-            if (_getRelationState == null) return FriendRelationState.None;
-            try { return _getRelationState(entry.PlayerId); }
+            var row = Instantiate(_rowPrefab, _leaderboardRowContainer, false);
+            UiSkin.Apply(row.transform);
+            row.Setup(entry, _goldMedal, _silverMedal, _bronzeMedal, index, _onAddFriend, relation, animate);
+            if (!string.IsNullOrEmpty(entry.PlayerId) && _requestsOff.Contains(entry.PlayerId))
+                row.SetTargetDisallowsRequests();
+            _rows.Add(row);
+        }
+
+        /// <summary>First load with nothing saved: a line saying what is loading and placeholder rows in the list's shape.</summary>
+        private void ShowLoading(LeaderboardScope scope)
+        {
+            ClearRows();
+            HideMessage();
+            if (_yourPositionText != null) _yourPositionText.text = string.Empty;
+
+            string what = scope switch
+            {
+                LeaderboardScope.Daily  => "today's",
+                LeaderboardScope.Weekly => "this week's",
+                _                       => "all-time",
+            };
+            AddNote($"Loading {what} scores…");
+            for (int i = 0; i < PlaceholderRowCount; i++) AddPlaceholderRow(i);
+        }
+
+        private void AddNote(string text, float size = 24f, float height = 44f)
+        {
+            var go = new GameObject("Note", typeof(RectTransform));
+            go.transform.SetParent(_leaderboardRowContainer, false);
+            ((RectTransform)go.transform).sizeDelta = new Vector2(0f, height);
+            var label = go.AddComponent<TextMeshProUGUI>();
+            if (_leaderboardStatusText != null) label.font = _leaderboardStatusText.font;
+            label.text = text;
+            label.fontSize = size;
+            label.color = UiSkin.TextMuted;
+            label.alignment = TextAlignmentOptions.Center;
+            label.margin = new Vector4(24f, 0f, 24f, 0f);
+            label.raycastTarget = false;
+        }
+
+        private void AddPlaceholderRow(int index)
+        {
+            float height = _rowPrefab != null ? ((RectTransform)_rowPrefab.transform).sizeDelta.y : 66f;
+            var go = new GameObject("PlaceholderRow", typeof(RectTransform), typeof(CanvasGroup));
+            go.transform.SetParent(_leaderboardRowContainer, false);
+            var rt = (RectTransform)go.transform;
+            rt.sizeDelta = new Vector2(0f, height);
+
+            var bg = go.AddComponent<Image>();
+            bg.color = new Color(0.1f, 0.1f, 0.13f, 0.7f); // the row prefab's background
+            bg.raycastTarget = false;
+            UiSprites.ApplyRounded(bg, 14f);
+
+            AddPlaceholderBar(rt, new Vector2(0f, 0.5f), 80f, PlaceholderNameWidths[index % PlaceholderNameWidths.Length]);
+            AddPlaceholderBar(rt, new Vector2(1f, 0.5f), -14f, 96f);
+
+            // A slow fade tells the player the list is on its way; it stops when real rows replace these.
+            go.GetComponent<CanvasGroup>().DOFade(0.45f, 0.7f).SetLoops(-1, LoopType.Yoyo).SetEase(Ease.InOutSine)
+                .SetDelay(index * 0.08f).SetUpdate(true).SetLink(go);
+        }
+
+        private static void AddPlaceholderBar(RectTransform row, Vector2 anchor, float x, float width)
+        {
+            var go = new GameObject("Bar", typeof(RectTransform));
+            go.transform.SetParent(row, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = anchor;
+            rt.pivot = new Vector2(anchor.x, 0.5f);
+            rt.anchoredPosition = new Vector2(x, 0f);
+            rt.sizeDelta = new Vector2(width, 18f);
+            var bar = go.AddComponent<Image>();
+            bar.color = new Color(1f, 1f, 1f, 0.08f);
+            bar.raycastTarget = false;
+            UiSprites.ApplyRounded(bar, 9f);
+        }
+
+        private void ClearRows()
+        {
+            foreach (Transform child in _leaderboardRowContainer)
+            {
+                child.gameObject.SetActive(false); // out of the layout now; Destroy only lands at the end of the frame
+                Destroy(child.gameObject);
+            }
+            _rows.Clear();
+        }
+
+        /// <summary>Empty boards and load errors, shown where the rows would be; an error also gets a Try again button.</summary>
+        private void ShowMessage(string text, bool retry)
+        {
+            ClearRows();
+            HideMessage();
+            if (retry && _yourPositionText != null) _yourPositionText.text = string.Empty;
+            AddNote(text, 28f, 140f);
+            if (retry) AddTryAgainButton();
+        }
+
+        private void AddTryAgainButton()
+        {
+            var holder = new GameObject("TryAgainRow", typeof(RectTransform));
+            holder.transform.SetParent(_leaderboardRowContainer, false);
+            ((RectTransform)holder.transform).sizeDelta = new Vector2(0f, 80f); // the list stretches its children; the button keeps its own size inside
+
+            var go = new GameObject("TryAgainBtn", typeof(RectTransform));
+            go.transform.SetParent(holder.transform, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(260f, 68f);
+            var image = go.AddComponent<Image>();
+            image.color = UiSkin.Primary;
+            UiSprites.ApplyRounded(image, 16f);
+            var button = go.AddComponent<Button>();
+            button.targetGraphic = image;
+            button.onClick.AddListener(() => { if (IsOpen) _ = RefreshLeaderboard(); });
+
+            var labelGo = new GameObject("Text", typeof(RectTransform));
+            labelGo.transform.SetParent(go.transform, false);
+            var labelRect = (RectTransform)labelGo.transform;
+            labelRect.anchorMin = Vector2.zero;
+            labelRect.anchorMax = Vector2.one;
+            labelRect.offsetMin = labelRect.offsetMax = Vector2.zero;
+            var label = labelGo.AddComponent<TextMeshProUGUI>();
+            if (_leaderboardStatusText != null) label.font = _leaderboardStatusText.font;
+            label.text = "TRY AGAIN";
+            label.fontSize = 26f;
+            label.color = Color.white;
+            label.alignment = TextAlignmentOptions.Center;
+            label.raycastTarget = false;
+            UiSkin.PadLabels(button);
+        }
+
+        private void HideMessage()
+        {
+            if (_leaderboardStatusText != null) _leaderboardStatusText.gameObject.SetActive(false);
+        }
+
+        private string EmptyMessage(LeaderboardScope scope, LeaderboardFilterMode filter)
+        {
+            string when = scope switch
+            {
+                LeaderboardScope.Daily  => " today",
+                LeaderboardScope.Weekly => " this week",
+                _                       => string.Empty,
+            };
+            if (filter == LeaderboardFilterMode.FriendsOnly)
+            {
+                return _lastFriendCount == 0
+                    ? "Add friends to compare\nscores with them here."
+                    : $"No scores{when} yet\nfrom you or your friends.";
+            }
+            return $"No scores{when} yet.\nFinish a run to be the first.";
+        }
+
+        private void StoreBoard(LeaderboardScope scope, LeaderboardFilterMode filter, BoardSnapshot board)
+        {
+            _boards[(scope, filter)] = board;
+            if (scope == LeaderboardScope.AllTime && filter == LeaderboardFilterMode.Global) SaveBoardToDevice(board);
+        }
+
+        private void SaveBoardToDevice(BoardSnapshot board)
+        {
+            try
+            {
+                var saved = new SavedBoard
+                {
+                    entries = board.Entries,
+                    hasPlayerEntry = board.HasPlayerEntry,
+                    playerEntry = board.PlayerEntry,
+                    requestsOff = new List<string>(_requestsOff).ToArray(),
+                };
+                PlayerPrefs.SetString(SavedBoardKey, JsonUtility.ToJson(saved));
+                PlayerPrefs.Save();
+            }
+            catch (Exception e) { Debug.LogWarning("[LeaderboardManager] Saving the list failed: " + e.Message); }
+        }
+
+        private void LoadSavedBoard()
+        {
+            if (_savedBoardLoaded) return;
+            _savedBoardLoaded = true;
+            try
+            {
+                string json = PlayerPrefs.GetString(SavedBoardKey, string.Empty);
+                if (string.IsNullOrEmpty(json)) return;
+                var saved = JsonUtility.FromJson<SavedBoard>(json);
+                if (saved?.entries == null) return;
+                if (saved.requestsOff != null) _requestsOff.UnionWith(saved.requestsOff);
+                var key = (LeaderboardScope.AllTime, LeaderboardFilterMode.Global);
+                if (!_boards.ContainsKey(key)) // a fetch that already finished is newer
+                {
+                    _boards[key] = new BoardSnapshot
+                    {
+                        Entries = saved.entries,
+                        HasPlayerEntry = saved.hasPlayerEntry,
+                        PlayerEntry = saved.playerEntry,
+                    };
+                }
+            }
+            catch (Exception e) { Debug.LogWarning("[LeaderboardManager] Reading the saved list failed: " + e.Message); }
+        }
+
+        private static bool SameBoard(BoardSnapshot a, BoardSnapshot b)
+        {
+            if (a.Entries == null || b.Entries == null || a.Entries.Length != b.Entries.Length) return false;
+            for (int i = 0; i < a.Entries.Length; i++)
+                if (!SameEntry(a.Entries[i], b.Entries[i])) return false;
+            if (a.HasPlayerEntry != b.HasPlayerEntry) return false;
+            return !a.HasPlayerEntry || SameEntry(a.PlayerEntry, b.PlayerEntry);
+        }
+
+        private static bool SameEntry(LeaderboardEntryData x, LeaderboardEntryData y) =>
+            x.Rank == y.Rank && x.PlayerId == y.PlayerId && x.PlayerName == y.PlayerName &&
+            x.Score.Equals(y.Score) && x.IsCurrentPlayer == y.IsCurrentPlayer;
+
+        private static int IndexOfCurrentPlayer(LeaderboardEntryData[] entries)
+        {
+            for (int i = 0; i < entries.Length; i++)
+                if (entries[i].IsCurrentPlayer) return i;
+            return -1;
+        }
+
+        private static int? YourRank(BoardSnapshot board)
+        {
+            int index = IndexOfCurrentPlayer(board.Entries);
+            if (index >= 0) return board.Entries[index].Rank;
+            return board.HasPlayerEntry ? board.PlayerEntry.Rank : (int?)null;
+        }
+
+        private FriendRelationState RelationFor(LeaderboardEntryData entry) =>
+            entry.IsCurrentPlayer ? FriendRelationState.Self : RelationFor(entry.PlayerId);
+
+        private FriendRelationState RelationFor(string playerId)
+        {
+            if (_getRelationState == null || string.IsNullOrEmpty(playerId)) return FriendRelationState.None;
+            try { return _getRelationState(playerId); }
             catch { return FriendRelationState.None; }
         }
 
         /// <summary>
-        /// Players who turned off incoming friend requests publish that preference; hide Add Friend for them.
-        /// Runs after rows are shown so the leaderboard never waits on these lookups.
+        /// Players who turned off incoming friend requests publish that preference; their Add Friend button is hidden.
+        /// Runs after rows are shown so the leaderboard never waits on these lookups. The answers are remembered, so
+        /// the next time the list opens those buttons are already hidden.
         /// </summary>
-        private async Task ApplyTargetPreferencesAsync(List<LeaderboardRowView> rows, LeaderboardEntryData[] entries, int generation)
+        private async Task ApplyTargetPreferencesAsync(LeaderboardEntryData[] entries, int generation)
         {
             if (_getSocialPrefs == null) return;
 
@@ -286,15 +579,21 @@ namespace StackSurge.Meta
             Dictionary<string, SocialPrefs> prefs;
             try { prefs = await _getSocialPrefs(candidateIds); }
             catch { return; }
+            if (prefs == null) return;
 
-            if (generation != _refreshGeneration || prefs == null) return;
-
-            foreach (var row in rows)
+            bool changed = false;
+            foreach (string id in candidateIds)
             {
-                if (row == null || string.IsNullOrEmpty(row.PlayerId)) continue;
-                if (prefs.TryGetValue(row.PlayerId, out var p) && p != null && !p.allowFriendRequests)
-                    row.SetTargetDisallowsRequests();
+                if (!prefs.TryGetValue(id, out var p) || p == null) continue;
+                changed |= p.allowFriendRequests ? _requestsOff.Remove(id) : _requestsOff.Add(id);
             }
+            if (changed && _boards.TryGetValue((LeaderboardScope.AllTime, LeaderboardFilterMode.Global), out var allTime))
+                SaveBoardToDevice(allTime);
+
+            if (generation != _refreshGeneration) return;
+            foreach (var row in _rows)
+                if (row != null && !string.IsNullOrEmpty(row.PlayerId) && _requestsOff.Contains(row.PlayerId))
+                    row.SetTargetDisallowsRequests();
         }
 
         public void HideLeaderboard()

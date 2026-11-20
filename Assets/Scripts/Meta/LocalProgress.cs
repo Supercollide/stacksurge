@@ -21,6 +21,18 @@ namespace StackSurge.Meta
         /// <summary>ISO date of when the current challenge set was fetched; used to detect daily rotation.</summary>
         public string ChallengeSetDate = "";
 
+        /// <summary>Ids of the challenge set the progress above belongs to (a different set starts fresh).</summary>
+        public string ChallengeSetIds = "";
+
+        /// <summary>Claimed flags parallel to ChallengeBits, kept locally so an offline claim can't be repeated.</summary>
+        public bool[] ChallengeClaimed = Array.Empty<bool>();
+
+        /// <summary>The ChallengeSetDate whose finish-all-three bonus was already added.</summary>
+        public string ChallengeBonusDate = "";
+
+        /// <summary>Local day (yyyy-MM-dd) the last 7-day streak reward was added, so it's given once per milestone.</summary>
+        public string StreakRewardDate = "";
+
         /// <summary>Unclaimed reward points to apply at the start of the next run.</summary>
         public int PendingRewardPoints;
 
@@ -292,5 +304,38 @@ namespace StackSurge.Meta
             foreach (int c in data.PlayHourHistogram) sum += Math.Max(0, c);
             return sum;
         }
+    }
+
+    /// <summary>
+    /// Every 7th day in a row (day 7, 14, 21...) the run that ends that day adds bonus points to the next run, once.
+    /// The bonus grows each week of the streak: 3,000 on day 7, 5,000 on day 14, 7,000 on day 21... up to 10,000.
+    /// </summary>
+    public static class StreakReward
+    {
+        public const int Days = 7;
+        public const int FirstWeekPoints = 3000;
+        public const int ExtraPerWeek = 2000;
+        public const int MaxPoints = 10000;
+
+        /// <summary>Bonus for reaching the given week of a streak (1 = day 7, 2 = day 14...).</summary>
+        public static int PointsForWeek(int week) =>
+            week <= 0 ? 0 : Mathf.Min(FirstWeekPoints + ExtraPerWeek * (week - 1), MaxPoints);
+
+        /// <summary>The bonus of the next milestone this streak reaches (today's, on a 7th day).</summary>
+        public static int NextPoints(int streak) => PointsForWeek((Mathf.Max(1, streak) + Days - 1) / Days);
+
+        /// <summary>Call after <see cref="LocalProgress.RegisterRunEnd"/>. Returns true when this run earned it.</summary>
+        public static bool TryGrant(SaveData data, ChallengeProvider provider)
+        {
+            if (data == null || provider == null || data.Streak <= 0 || data.Streak % Days != 0) return false;
+            string today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (data.StreakRewardDate == today) return false;
+            data.StreakRewardDate = today;
+            provider.AddBonusPoints(PointsForWeek(data.Streak / Days)); // also saves
+            return true;
+        }
+
+        /// <summary>Where today sits in the current run of 7: 1-7 (7 = reward day), or 0 with no streak.</summary>
+        public static int DayInCycle(int streak) => streak <= 0 ? 0 : (streak - 1) % Days + 1;
     }
 }

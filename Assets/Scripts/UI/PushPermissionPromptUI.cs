@@ -139,13 +139,11 @@ namespace StackSurge.UI
             _dialogPanel = dialogObj.AddComponent<RectTransform>();
             _dialogPanel.anchorMin = new Vector2(0.5f, 0.5f);
             _dialogPanel.anchorMax = new Vector2(0.5f, 0.5f);
-            _dialogPanel.sizeDelta = new Vector2(850, 600);
+            _dialogPanel.sizeDelta = new Vector2(850, 620);
             _dialogPanel.localScale = Vector3.one * 0.8f;
             Image dialogBg = dialogObj.AddComponent<Image>();
-            dialogBg.color = new Color(0.10f, 0.12f, 0.18f, 0.98f);
-            Outline dialogBorder = dialogObj.AddComponent<Outline>();
-            dialogBorder.effectColor = new Color(0.25f, 0.40f, 0.85f, 0.6f);
-            dialogBorder.effectDistance = new Vector2(3, -3);
+            dialogBg.color = UiSkin.Surface;
+            UiSprites.ApplyRounded(dialogBg, 28f);
 
             GameObject layoutObj = new GameObject("ContentLayout");
             layoutObj.transform.SetParent(dialogObj.transform, false);
@@ -161,10 +159,10 @@ namespace StackSurge.UI
             vlayout.childControlHeight = false;
             vlayout.childForceExpandHeight = false;
 
-            AddText(layoutObj.transform, "Title", "Don't lose your streak", 40, FontStyles.Bold, Color.white, 60);
+            AddText(layoutObj.transform, "Title", "Don't lose your streak", 44, FontStyles.Bold, Color.white, 60);
             AddText(layoutObj.transform, "Body",
                 "We'll remind you before it resets and tell you when a friend beats your score.",
-                26, FontStyles.Normal, new Color(0.80f, 0.84f, 0.92f), 110);
+                30, FontStyles.Normal, new Color(0.80f, 0.84f, 0.92f), 130);
 
             AddButton(layoutObj.transform, "TurnOnButton", "Turn on", new Color(0.20f, 0.45f, 0.90f, 1f), OnTurnOn);
             AddButton(layoutObj.transform, "NotNowButton", "Not now", new Color(0.22f, 0.26f, 0.36f, 1f), Close);
@@ -196,6 +194,7 @@ namespace StackSurge.UI
             btnRect.sizeDelta = new Vector2(0, 90);
             Image bg = btnObj.AddComponent<Image>();
             bg.color = color;
+            UiSprites.ApplyRounded(bg, 20f);
             Button btn = btnObj.AddComponent<Button>();
             btn.targetGraphic = bg;
             btn.onClick.AddListener(() => onClick());

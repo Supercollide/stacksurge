@@ -63,13 +63,11 @@ namespace StackSurge.UI
             _dialogPanel = dialogObj.AddComponent<RectTransform>();
             _dialogPanel.anchorMin = new Vector2(0.5f, 0.5f);
             _dialogPanel.anchorMax = new Vector2(0.5f, 0.5f);
-            _dialogPanel.sizeDelta = new Vector2(850, 760);
+            _dialogPanel.sizeDelta = new Vector2(850, 800);
             _dialogPanel.localScale = Vector3.one * 0.8f;
             Image dialogBg = dialogObj.AddComponent<Image>();
-            dialogBg.color = new Color(0.10f, 0.12f, 0.18f, 0.98f);
-            Outline dialogBorder = dialogObj.AddComponent<Outline>();
-            dialogBorder.effectColor = new Color(0.25f, 0.40f, 0.85f, 0.6f);
-            dialogBorder.effectDistance = new Vector2(3, -3);
+            dialogBg.color = UiSkin.Surface;
+            UiSprites.ApplyRounded(dialogBg, 28f);
 
             GameObject layoutObj = new GameObject("ContentLayout");
             layoutObj.transform.SetParent(dialogObj.transform, false);
@@ -85,12 +83,12 @@ namespace StackSurge.UI
             vlayout.childControlHeight = false;
             vlayout.childForceExpandHeight = false;
 
-            AddText(layoutObj.transform, "Title", "Help us improve Stack Surge?", 38, FontStyles.Bold, Color.white, 60);
+            AddText(layoutObj.transform, "Title", "Help us improve Stack Surge?", 42, FontStyles.Bold, Color.white, 60);
             AddText(layoutObj.transform, "Body",
-                "Can we collect usage data, like how long you play, your device model and your country, " +
-                "to fix bugs and make the game better? We never use it for ads.\n\n" +
+                "We would like to collect usage stats to help us improve this game. " +
+                "We do not collect any activity outside this app and we will never use it to show you ads.\n\n" +
                 "You can change this anytime in Settings.",
-                24, FontStyles.Normal, new Color(0.80f, 0.84f, 0.92f), 260);
+                30, FontStyles.Normal, new Color(0.80f, 0.84f, 0.92f), 300);
 
             AddButton(layoutObj.transform, "AllowButton", "Allow", new Color(0.20f, 0.45f, 0.90f, 1f), () => Decide(true));
             AddButton(layoutObj.transform, "DeclineButton", "No thanks", new Color(0.22f, 0.26f, 0.36f, 1f), () => Decide(false));
@@ -104,7 +102,7 @@ namespace StackSurge.UI
             linkBtn.onClick.AddListener(() => Application.OpenURL(AnalyticsConsent.PrivacyPolicyUrl));
             TextMeshProUGUI linkText = linkObj.AddComponent<TextMeshProUGUI>();
             linkText.text = "<u>Privacy policy</u>";
-            linkText.fontSize = 22;
+            linkText.fontSize = 26;
             linkText.alignment = TextAlignmentOptions.Center;
             linkText.color = new Color(0.55f, 0.70f, 1f);
             linkBtn.targetGraphic = linkText;
@@ -132,9 +130,10 @@ namespace StackSurge.UI
             GameObject btnObj = new GameObject(name);
             btnObj.transform.SetParent(parent, false);
             RectTransform btnRect = btnObj.AddComponent<RectTransform>();
-            btnRect.sizeDelta = new Vector2(0, 80);
+            btnRect.sizeDelta = new Vector2(0, 92);
             Image bg = btnObj.AddComponent<Image>();
             bg.color = color;
+            UiSprites.ApplyRounded(bg, 20f);
             Button btn = btnObj.AddComponent<Button>();
             btn.targetGraphic = bg;
             btn.onClick.AddListener(() => onClick());
@@ -147,7 +146,7 @@ namespace StackSurge.UI
             txtRect.sizeDelta = Vector2.zero;
             TextMeshProUGUI txt = txtObj.AddComponent<TextMeshProUGUI>();
             txt.text = label;
-            txt.fontSize = 28;
+            txt.fontSize = 32;
             txt.fontStyle = FontStyles.Bold;
             txt.alignment = TextAlignmentOptions.Center;
             txt.color = Color.white;

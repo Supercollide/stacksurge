@@ -19,6 +19,10 @@ namespace StackSurge.UI
         private RectTransform _dialogPanel;
         private CanvasGroup _canvasGroup;
 
+        private Slider _sfxVolumeSlider;
+        private TextMeshProUGUI _sfxVolumeLabel;
+        private Toggle _vibrationToggle;
+        private Toggle _shapesToggle;
         private Toggle _leaderboardToggle;
         private Toggle _friendsToggle;
         private Toggle _remindersToggle;
@@ -42,18 +46,18 @@ namespace StackSurge.UI
         private readonly List<PillSwitch> _pills = new List<PillSwitch>();
 
         // Layout, in reference units of the 1080x1920 canvas
-        private const float DialogWidth = 850f;
+        private const float DialogWidth = 880f;
         private const float DialogPadding = 36f;
         private const float SectionSpacing = 20f;
-        private const float HeaderHeight = 52f;
-        private const float DescriptionHeight = 64f;
-        private const float BannerHeight = 128f;
-        private const float RowHeight = 100f;
+        private const float HeaderHeight = 58f;
+        private const float DescriptionHeight = 76f;
+        private const float BannerHeight = 150f;
+        private const float RowHeight = 124f;
         private const float RowSpacing = 12f;
-        private const float CloseButtonHeight = 84f;
+        private const float CloseButtonHeight = 92f;
         private const float MinScrollHeight = 220f;
         private const float ScreenMargin = 40f;
-        private const int RowCount = 5;
+        private const int RowCount = 8;
 
         private static readonly Color PillOnColor = new Color(0.20f, 0.72f, 0.42f, 1f);
         private static readonly Color PillOffColor = new Color(0.26f, 0.30f, 0.40f, 1f);
@@ -116,11 +120,8 @@ namespace StackSurge.UI
             _dialogPanel.localScale = Vector3.one * 0.8f;
 
             Image dialogBg = dialogObj.AddComponent<Image>();
-            dialogBg.color = new Color(0.10f, 0.12f, 0.18f, 0.98f);
-
-            Outline dialogBorder = dialogObj.AddComponent<Outline>();
-            dialogBorder.effectColor = new Color(0.25f, 0.40f, 0.85f, 0.6f);
-            dialogBorder.effectDistance = new Vector2(3, -3);
+            dialogBg.color = UiSkin.Surface;
+            UiSprites.ApplyRounded(dialogBg, 28f);
 
             // Vertical Layout Container
             GameObject layoutObj = new GameObject("ContentLayout");
@@ -145,7 +146,7 @@ namespace StackSurge.UI
             titleObj.transform.SetParent(layoutObj.transform, false);
             TextMeshProUGUI titleText = titleObj.AddComponent<TextMeshProUGUI>();
             titleText.text = "Settings";
-            titleText.fontSize = 40;
+            titleText.fontSize = 46;
             titleText.fontStyle = FontStyles.Bold;
             titleText.alignment = TextAlignmentOptions.Center;
             titleText.color = Color.white;
@@ -155,8 +156,8 @@ namespace StackSurge.UI
             GameObject descObj = new GameObject("Description");
             descObj.transform.SetParent(layoutObj.transform, false);
             TextMeshProUGUI descText = descObj.AddComponent<TextMeshProUGUI>();
-            descText.text = "Choose your alerts, who can add you and what data you share:";
-            descText.fontSize = 24;
+            descText.text = "Sound, accessibility, alerts, who can add you and what data you share:";
+            descText.fontSize = 28;
             descText.alignment = TextAlignmentOptions.Center;
             descText.color = new Color(0.75f, 0.80f, 0.90f);
             descText.textWrappingMode = TextWrappingModes.Normal;
@@ -167,11 +168,14 @@ namespace StackSurge.UI
 
             // Toggles live in a scroll view so the dialog still fits short screens.
             Transform rows = BuildScrollView(layoutObj.transform);
+            _sfxVolumeSlider = CreateSliderRow(rows, "Sound Effects", "Volume of drops, clears, bombs and other game sounds");
+            _vibrationToggle = CreateToggleRow(rows, "Vibration", "Short haptic taps on clears, bombs and blocked moves");
+            _shapesToggle = CreateToggleRow(rows, "Tile Shapes", "A different shape on each tile colour (colour-blind friendly)");
             _leaderboardToggle = CreateToggleRow(rows, "Rank drop alerts (in-game)", "Show a banner in the leaderboard when someone overtakes your rank");
             _friendsToggle = CreateToggleRow(rows, "Friend Activity", "Friend requests, accepted requests and friends beating your score");
             _remindersToggle = CreateToggleRow(rows, "Streak & Game Reminders", "Streak protection, daily board reset and comeback reminders");
             _allowRequestsToggle = CreateToggleRow(rows, "Allow Friend Requests", "Let other players send you friend requests from the leaderboard");
-            _analyticsToggle = CreateToggleRow(rows, "Share Usage Data", "Help improve the game with anonymous usage stats (Unity Analytics)");
+            _analyticsToggle = CreateToggleRow(rows, "Share Usage Data", "Help improve the game with usage stats (Unity Analytics)");
 
             // Close Button
             GameObject btnObj = new GameObject("CloseButton");
@@ -179,14 +183,31 @@ namespace StackSurge.UI
             btnObj.AddComponent<RectTransform>();
             SetFixedHeight(btnObj, CloseButtonHeight);
             Image btnBg = btnObj.AddComponent<Image>();
-            btnBg.color = new Color(0.20f, 0.45f, 0.90f, 1f);
+            btnBg.color = UiSkin.Primary;
+            UiSprites.ApplyRounded(btnBg, 20f);
 
             _closeButton = btnObj.AddComponent<Button>();
             _closeButton.targetGraphic = btnBg;
             _closeButton.onClick.AddListener(Hide);
-            AddStretchedLabel(btnObj.transform, "Close", 28);
+            AddStretchedLabel(btnObj.transform, "Close", 34);
 
             // Wire toggle events
+            _sfxVolumeSlider.onValueChanged.AddListener(val =>
+            {
+                GamePrefs.SetSfxVolume(val, save: false);
+                RefreshVolumeLabel();
+            });
+            _sfxVolumeSlider.gameObject.AddComponent<PointerUpRelay>().Released += () =>
+            {
+                GamePrefs.SetSfxVolume(_sfxVolumeSlider.value, save: true);
+                SfxPlayer.Play(Sfx.UiTap); // preview the new volume (silent at 0)
+            };
+            _vibrationToggle.onValueChanged.AddListener(val =>
+            {
+                GamePrefs.Vibration = val;
+                if (val) Haptics.Light();
+            });
+            _shapesToggle.onValueChanged.AddListener(val => GamePrefs.TileShapes = val);
             _leaderboardToggle.onValueChanged.AddListener(OnLeaderboardToggleChanged);
             _friendsToggle.onValueChanged.AddListener(OnFriendsToggleChanged);
             _remindersToggle.onValueChanged.AddListener(OnRemindersToggleChanged);
@@ -257,6 +278,7 @@ namespace StackSurge.UI
 
             Image bannerBg = _permissionBanner.AddComponent<Image>();
             bannerBg.color = new Color(0.30f, 0.18f, 0.10f, 1f);
+            UiSprites.ApplyRounded(bannerBg, 18f);
 
             HorizontalLayoutGroup hlayout = _permissionBanner.AddComponent<HorizontalLayoutGroup>();
             hlayout.padding = new RectOffset(22, 22, 14, 14);
@@ -279,8 +301,8 @@ namespace StackSurge.UI
             textLayout.childControlHeight = true;
             textLayout.childForceExpandHeight = false;
 
-            AddText(textCol.transform, "Title", "Notifications are off", 26, FontStyles.Bold, new Color(1f, 0.82f, 0.45f));
-            AddText(textCol.transform, "Subtitle", "Turn them on for streak reminders and friend alerts.", 21, FontStyles.Normal, new Color(0.92f, 0.86f, 0.80f));
+            AddText(textCol.transform, "Title", "Notifications are off", 30, FontStyles.Bold, new Color(1f, 0.82f, 0.45f));
+            AddText(textCol.transform, "Subtitle", "Turn them on for streak reminders and friend alerts.", 25, FontStyles.Normal, new Color(0.92f, 0.86f, 0.80f));
 
             GameObject btnObj = new GameObject("EnableButton");
             btnObj.transform.SetParent(_permissionBanner.transform, false);
@@ -289,11 +311,12 @@ namespace StackSurge.UI
             btnLayout.minWidth = btnLayout.preferredWidth = 170;
             btnLayout.minHeight = btnLayout.preferredHeight = 72;
             Image btnBg = btnObj.AddComponent<Image>();
-            btnBg.color = new Color(0.20f, 0.45f, 0.90f, 1f);
+            btnBg.color = UiSkin.Primary;
+            UiSprites.ApplyRounded(btnBg, 16f);
             _enableButton = btnObj.AddComponent<Button>();
             _enableButton.targetGraphic = btnBg;
             _enableButton.onClick.AddListener(OnEnableNotificationsClicked);
-            AddStretchedLabel(btnObj.transform, "Enable", 26);
+            AddStretchedLabel(btnObj.transform, "Enable", 30);
 
             _permissionBanner.SetActive(false);
         }
@@ -327,10 +350,126 @@ namespace StackSurge.UI
             vlayout.childControlHeight = true;
             vlayout.childForceExpandHeight = false;
 
-            AddText(textCol.transform, "Title", titleText, 28, FontStyles.Bold, Color.white);
-            AddText(textCol.transform, "Subtitle", subtitleText, 21, FontStyles.Normal, new Color(0.70f, 0.75f, 0.85f));
+            AddText(textCol.transform, "Title", titleText, 32, FontStyles.Bold, Color.white);
+            AddText(textCol.transform, "Subtitle", subtitleText, 25, FontStyles.Normal, new Color(0.70f, 0.75f, 0.85f));
 
             return CreatePillSwitch(row.transform);
+        }
+
+        private const float SliderWidth = 250f;
+        private const float SliderTrackHeight = 14f;
+        private const float SliderHandleSize = 46f;
+        private const float VolumeLabelWidth = 84f;
+
+        /// <summary>Row with a title/subtitle on the left and a 0–100% slider plus its percentage on the right.</summary>
+        private Slider CreateSliderRow(Transform parent, string titleText, string subtitleText)
+        {
+            GameObject row = new GameObject($"SliderRow_{titleText}");
+            row.transform.SetParent(parent, false);
+            row.AddComponent<RectTransform>();
+            SetFixedHeight(row, RowHeight);
+
+            HorizontalLayoutGroup hlayout = row.AddComponent<HorizontalLayoutGroup>();
+            hlayout.spacing = 16;
+            hlayout.childAlignment = TextAnchor.MiddleLeft;
+            hlayout.childControlWidth = true;
+            hlayout.childControlHeight = true;
+            hlayout.childForceExpandWidth = false;
+            hlayout.childForceExpandHeight = false;
+
+            GameObject textCol = new GameObject("TextCol");
+            textCol.transform.SetParent(row.transform, false);
+            textCol.AddComponent<RectTransform>();
+            textCol.AddComponent<LayoutElement>().flexibleWidth = 1;
+            VerticalLayoutGroup vlayout = textCol.AddComponent<VerticalLayoutGroup>();
+            vlayout.spacing = 4;
+            vlayout.childAlignment = TextAnchor.MiddleLeft;
+            vlayout.childControlWidth = true;
+            vlayout.childControlHeight = true;
+            vlayout.childForceExpandHeight = false;
+            AddText(textCol.transform, "Title", titleText, 32, FontStyles.Bold, Color.white);
+            AddText(textCol.transform, "Subtitle", subtitleText, 25, FontStyles.Normal, new Color(0.70f, 0.75f, 0.85f));
+
+            // Slider: rounded track, blue fill, round white handle (kept inside the track's ends).
+            GameObject sliderObj = new GameObject("Slider");
+            sliderObj.transform.SetParent(row.transform, false);
+            sliderObj.AddComponent<RectTransform>();
+            LayoutElement sliderLayout = sliderObj.AddComponent<LayoutElement>();
+            sliderLayout.minWidth = sliderLayout.preferredWidth = SliderWidth;
+            sliderLayout.minHeight = sliderLayout.preferredHeight = SliderHandleSize;
+
+            RectTransform track = NewChildRect(sliderObj.transform, "Track", new Vector2(0f, 0.5f), new Vector2(1f, 0.5f));
+            track.sizeDelta = new Vector2(0f, SliderTrackHeight);
+            Image trackImg = track.gameObject.AddComponent<Image>();
+            trackImg.color = PillOffColor;
+            UiSprites.ApplyRounded(trackImg, SliderTrackHeight * 0.5f);
+
+            RectTransform fillArea = NewChildRect(sliderObj.transform, "FillArea", new Vector2(0f, 0.5f), new Vector2(1f, 0.5f));
+            fillArea.sizeDelta = new Vector2(0f, SliderTrackHeight);
+            RectTransform fill = NewChildRect(fillArea, "Fill", Vector2.zero, Vector2.one);
+            fill.sizeDelta = Vector2.zero;
+            Image fillImg = fill.gameObject.AddComponent<Image>();
+            fillImg.color = UiSkin.Primary;
+            fillImg.raycastTarget = false;
+            UiSprites.ApplyRounded(fillImg, SliderTrackHeight * 0.5f);
+
+            RectTransform handleArea = NewChildRect(sliderObj.transform, "HandleArea", Vector2.zero, Vector2.one);
+            handleArea.offsetMin = new Vector2(SliderHandleSize * 0.5f, 0f);
+            handleArea.offsetMax = new Vector2(-SliderHandleSize * 0.5f, 0f);
+            // The Slider stretches the handle rect to the handle area's height, so the visible knob is a fixed-size
+            // child: it stays a perfect circle whatever height the row's layout gives the slider.
+            RectTransform handle = NewChildRect(handleArea, "Handle", new Vector2(0f, 0f), new Vector2(0f, 1f));
+            handle.sizeDelta = new Vector2(SliderHandleSize, 0f);
+            RectTransform knob = NewChildRect(handle, "Knob", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f));
+            knob.sizeDelta = new Vector2(SliderHandleSize, SliderHandleSize);
+            Image handleImg = knob.gameObject.AddComponent<Image>();
+            handleImg.sprite = UiSprites.Circle;
+            handleImg.preserveAspect = true;
+            handleImg.color = Color.white;
+
+            Slider slider = sliderObj.AddComponent<Slider>();
+            slider.direction = Slider.Direction.LeftToRight;
+            slider.minValue = 0f;
+            slider.maxValue = 1f;
+            slider.fillRect = fill;
+            slider.handleRect = handle;
+            slider.targetGraphic = handleImg;
+            var nav = slider.navigation;
+            nav.mode = Navigation.Mode.None;
+            slider.navigation = nav;
+
+            GameObject labelObj = new GameObject("Value");
+            labelObj.transform.SetParent(row.transform, false);
+            labelObj.AddComponent<RectTransform>();
+            LayoutElement labelLayout = labelObj.AddComponent<LayoutElement>();
+            labelLayout.minWidth = labelLayout.preferredWidth = VolumeLabelWidth;
+            _sfxVolumeLabel = labelObj.AddComponent<TextMeshProUGUI>();
+            _sfxVolumeLabel.fontSize = 26;
+            _sfxVolumeLabel.fontStyle = FontStyles.Bold;
+            _sfxVolumeLabel.color = Color.white;
+            _sfxVolumeLabel.alignment = TextAlignmentOptions.MidlineRight;
+            _sfxVolumeLabel.textWrappingMode = TextWrappingModes.NoWrap;
+            _sfxVolumeLabel.raycastTarget = false;
+
+            return slider;
+        }
+
+        private void RefreshVolumeLabel()
+        {
+            if (_sfxVolumeLabel == null || _sfxVolumeSlider == null) return;
+            int percent = Mathf.RoundToInt(_sfxVolumeSlider.value * 100f);
+            _sfxVolumeLabel.text = percent == 0 ? "Off" : percent + "%";
+        }
+
+        private static RectTransform NewChildRect(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax)
+        {
+            GameObject go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            RectTransform rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = anchorMin;
+            rt.anchorMax = anchorMax;
+            rt.anchoredPosition = Vector2.zero;
+            return rt;
         }
 
         /// <summary>ON/OFF switch: green track with the knob on the right when on, grey with the knob on the left when off.</summary>
@@ -345,12 +484,14 @@ namespace StackSurge.UI
 
             Image track = toggleObj.AddComponent<Image>();
             track.color = PillOffColor;
+            UiSprites.ApplyRounded(track, 30f);
 
             GameObject knobObj = new GameObject("Knob");
             knobObj.transform.SetParent(toggleObj.transform, false);
             RectTransform knob = knobObj.AddComponent<RectTransform>();
             knob.sizeDelta = new Vector2(50, 50);
             Image knobImg = knobObj.AddComponent<Image>();
+            knobImg.sprite = UiSprites.Circle;
             knobImg.color = Color.white;
             knobImg.raycastTarget = false;
 
@@ -362,7 +503,7 @@ namespace StackSurge.UI
             labelRect.offsetMin = new Vector2(14, 0);
             labelRect.offsetMax = new Vector2(-14, 0);
             TextMeshProUGUI label = labelObj.AddComponent<TextMeshProUGUI>();
-            label.fontSize = 20;
+            label.fontSize = 22;
             label.fontStyle = FontStyles.Bold;
             label.color = Color.white;
             label.raycastTarget = false;
@@ -456,11 +597,15 @@ namespace StackSurge.UI
         private void UpdateToggleStates()
         {
             if (_save == null) return;
+            _sfxVolumeSlider.SetValueWithoutNotify(GamePrefs.SfxVolume);
+            RefreshVolumeLabel();
+            _vibrationToggle.SetIsOnWithoutNotify(GamePrefs.Vibration);
+            _shapesToggle.SetIsOnWithoutNotify(GamePrefs.TileShapes);
             _leaderboardToggle.SetIsOnWithoutNotify(_save.NotifyLeaderboardDrops);
             _friendsToggle.SetIsOnWithoutNotify(_save.NotifyFriendActivity);
             _remindersToggle.SetIsOnWithoutNotify(_save.NotifyReminders);
             _allowRequestsToggle.SetIsOnWithoutNotify(_save.AllowFriendRequests);
-            _analyticsToggle.SetIsOnWithoutNotify(_save.AnalyticsConsent == AnalyticsConsent.Allowed);
+            _analyticsToggle.SetIsOnWithoutNotify(AnalyticsConsent.IsCollectionAllowed(_save));
 
             // SetIsOnWithoutNotify skips onValueChanged, so redraw the switches here.
             foreach (var pill in _pills) RefreshPill(pill);
@@ -572,6 +717,11 @@ namespace StackSurge.UI
             IsOpen = true;
             _overlayObj.SetActive(true);
             RefreshPermissionBanner(); // also sizes the dialog to the screen
+
+            // Button/switch labels keep clear of their edges (needs laid-out sizes, so done once it is visible).
+            Canvas.ForceUpdateCanvases();
+            foreach (var selectable in _overlayObj.GetComponentsInChildren<Selectable>(true))
+                UiSkin.PadLabels(selectable);
 
             _canvasGroup.DOKill();
             _dialogPanel.DOKill();

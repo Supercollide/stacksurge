@@ -11,8 +11,8 @@ namespace StackSurge.UI
     /// </summary>
     public static class Haptics
     {
-        /// <summary>Mirrors the player's vibration toggle.</summary>
-        public static bool Enabled = true;
+        /// <summary>The player's vibration toggle (main menu / Settings).</summary>
+        public static bool Enabled => GamePrefs.Vibration;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         static AndroidJavaObject _vibrator;

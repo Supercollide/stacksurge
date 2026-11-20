@@ -147,6 +147,72 @@ namespace StackSurge.UI
             {
                 _myPlayerIdText.text = $"My ID: {_friendsService.GetCurrentPlayerId()}";
             }
+
+            FitAddFriendSection();
+
+            // The friends modal lives on its own canvas, outside the main UI skin pass.
+            if (_friendsRoot != null) UiSkin.Apply(_friendsRoot.transform);
+        }
+
+        // The Add Friend tab was built with 12–15pt text in 36–48 tall controls. These sizes match the row
+        // buttons and tabs above it; the section is 450 tall, so the taller stack still fits with room to spare.
+        const float AddFriendFieldHeight = 72f;
+        const float AddFriendFieldFontSize = 26f;
+        const float AddFriendGap = 16f;
+        const float MyIdRowGap = 20f;
+        const float MyIdRowHeight = 56f;
+        const float MyIdFontSize = 22f;
+        const float CopyButtonWidth = 160f;
+        const float CopyButtonHeight = 52f;
+
+        private void FitAddFriendSection()
+        {
+            if (_targetPlayerIdInput == null || _sendRequestButton == null) return;
+
+            var input = (RectTransform)_targetPlayerIdInput.transform;
+            float top = TopOf(input); // keep the scene's top edge, grow downwards
+            top = PlaceFromTop(input, top, AddFriendFieldHeight) + AddFriendGap;
+            _targetPlayerIdInput.pointSize = AddFriendFieldFontSize;
+
+            top = PlaceFromTop((RectTransform)_sendRequestButton.transform, top, AddFriendFieldHeight) + MyIdRowGap;
+            SetLabelSize(_sendRequestButton, AddFriendFieldFontSize);
+
+            if (_myPlayerIdText == null) return;
+            if (_myPlayerIdText.rectTransform.parent is RectTransform row && row != input.parent)
+                PlaceFromTop(row, top, MyIdRowHeight);
+
+            // Player IDs are one long word: shrink to fit on one line instead of breaking mid-ID.
+            _myPlayerIdText.enableAutoSizing = true;
+            _myPlayerIdText.fontSizeMax = MyIdFontSize;
+            _myPlayerIdText.fontSizeMin = 14f;
+            _myPlayerIdText.fontSize = MyIdFontSize;
+            _myPlayerIdText.textWrappingMode = TextWrappingModes.NoWrap;
+
+            if (_copyMyIdButton == null) return;
+            ((RectTransform)_copyMyIdButton.transform).sizeDelta = new Vector2(CopyButtonWidth, CopyButtonHeight);
+            SetLabelSize(_copyMyIdButton, MyIdFontSize);
+            var idRect = _myPlayerIdText.rectTransform;
+            idRect.offsetMax = new Vector2(-(CopyButtonWidth + AddFriendGap), idRect.offsetMax.y);
+        }
+
+        /// <summary>Distance from the parent's top edge to this top-anchored rect's top edge.</summary>
+        private static float TopOf(RectTransform rect) =>
+            -rect.anchoredPosition.y - rect.sizeDelta.y * (1f - rect.pivot.y);
+
+        /// <summary>Puts a top-anchored rect at <paramref name="top"/> with the given height; returns its bottom edge.</summary>
+        private static float PlaceFromTop(RectTransform rect, float top, float height)
+        {
+            rect.sizeDelta = new Vector2(rect.sizeDelta.x, height);
+            rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -(top + height * (1f - rect.pivot.y)));
+            return top + height;
+        }
+
+        private static void SetLabelSize(Button button, float size)
+        {
+            var label = button.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label == null) return;
+            label.fontSize = size;
+            label.fontSizeMax = size;
         }
 
         private void OnDestroy()
@@ -332,6 +398,7 @@ namespace StackSurge.UI
             {
                 if (_friendsRowContainer == null || _rowPrefab == null) break;
                 FriendsRowView row = Instantiate(_rowPrefab, _friendsRowContainer);
+                UiSkin.Apply(row.transform);
 
                 row.SetupFriend(
                     friends[i],
@@ -381,6 +448,7 @@ namespace StackSurge.UI
             {
                 if (_friendsRowContainer == null || _rowPrefab == null) break;
                 FriendsRowView row = Instantiate(_rowPrefab, _friendsRowContainer);
+                UiSkin.Apply(row.transform);
 
                 row.SetupRequest(
                     allRequests[i],
@@ -536,6 +604,7 @@ namespace StackSurge.UI
             {
                 if (_friendsRowContainer == null || _rowPrefab == null) break;
                 FriendsRowView row = Instantiate(_rowPrefab, _friendsRowContainer);
+                UiSkin.Apply(row.transform);
                 row.SetupBlocked(
                     blocked[i],
                     onUnblock: async (playerId) => await UnblockUserAsync(playerId),

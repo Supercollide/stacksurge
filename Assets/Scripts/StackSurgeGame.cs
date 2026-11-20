@@ -34,6 +34,10 @@ namespace StackSurge
         TileKind _next;
 
         float _timeAlive;
+        ChallengeDisplayData[] _challengesAtRunStart;
+        bool _allDoneBonusAtRunStart;
+        // Counted for challenges (rows cleared, perfect clears, bombs set off, 5-in-a-line matches).
+        int _runRows, _runPerfects, _runBombs, _runMatch5s;
         float _riseAccumulator;
         float _slowFillBuff;
         bool _playing;
@@ -47,7 +51,7 @@ namespace StackSurge
         const float PostWaveSeconds = 0.04f;
 
         // One-tap buffer: a tap that lands while the board is resolving is replayed when it settles.
-        const float TapBufferSeconds = 0.5f;
+        const float TapBufferSeconds = 0.7f; // covers a full single clear (landing + pop + fall)
         int _bufferedColumn = -1;
         float _bufferedTapTime;
 
@@ -129,26 +133,6 @@ namespace StackSurge
             _tutorialCoroutine = StartCoroutine(_tutorialController.PlayTutorialCoroutine());
         }
 
-        static ChallengeDefinition[] BuildDefaultChallenges()
-        {
-            ChallengeDefinition C(string title, string desc, ChallengeType ty, int target)
-            {
-                var c = ScriptableObject.CreateInstance<ChallengeDefinition>();
-                c.Title = title;
-                c.Description = desc;
-                c.Type = ty;
-                c.TargetValue = target;
-                return c;
-            }
-
-            return new[]
-            {
-                C("Score 1000", "Reach 1000 points in one run.", ChallengeType.ScoreInRun, 1000),
-                C("Survivalist", "Stay alive for 3 minutes.", ChallengeType.SurviveSeconds, 180),
-                C("Combo hunter", "Reach x5 combo multiplier.", ChallengeType.MaxComboMultiplier, 5)
-            };
-        }
-
         async void Awake()
         {
             if (_settings == null) _settings = ScriptableObject.CreateInstance<StackSurgeSettings>();
@@ -161,7 +145,7 @@ namespace StackSurge
             if (cam != null)
             {
                 cam.clearFlags = CameraClearFlags.SolidColor;
-                cam.backgroundColor = new Color(0.04f, 0.04f, 0.06f, 1f);
+                cam.backgroundColor = UiSkin.AppBackground;
             }
 
             if (_view == null) _view = GetComponent<GameView>();
@@ -190,6 +174,8 @@ namespace StackSurge
 
             // Build the toast UI now (avoids a hitch on the first toast) and hold toasts while the player is busy.
             InAppNotificationView.EnsureInstance();
+            SfxPlayer.EnsureInstance(); // loads the clips now so the first sound doesn't hitch
+            UiSprites.Warm();
             InAppNotificationView.IsBusy = () =>
                 _inTutorial || (_playing && Time.timeScale > 0f) || (_view != null && _view.IsLoadingScreenActive);
 
@@ -204,8 +190,8 @@ namespace StackSurge
 
             // UGS / Challenges async initialization
             _view.UpdateLoadingStatus("CONNECTING TO SERVICES...");
-            var defs = _challengeAssets != null && _challengeAssets.Length > 0 ? _challengeAssets : BuildDefaultChallenges();
-            await _provider.InitializeAsync(_save, defs);
+            // Inspector assets, if any, are a fixed set; otherwise each day is picked from the challenge pool.
+            await _provider.InitializeAsync(_save, _challengeAssets);
 
             // Starts Unity Analytics only if the player already agreed (no-op otherwise).
             AnalyticsConsent.Apply(_save);
@@ -221,6 +207,7 @@ namespace StackSurge
 
             _leaderboardService = new LeaderboardService(_provider.IsOnline, _save, _friendsService);
             RegisterLeaderboardCallbacks();
+            if (_leaderboardManager != null) _leaderboardManager.Prefetch(); // the first open already has its list
 
             _view.UpdateLoadingStatus(_provider.IsOnline ? "ONLINE" : "NO INTERNET, PLAYING OFFLINE");
             _challenges = new ChallengeTracker(_provider);
@@ -470,6 +457,12 @@ namespace StackSurge
                     _score.AddDirectPoints(bonus);
                 }
             }
+            // Challenge progress as the run starts (after moving to a new day's set if the day changed); the Game Over
+            // screen animates from here to show what the run added.
+            _runRows = _runPerfects = _runBombs = _runMatch5s = 0;
+            _challenges?.BeginRun();
+            _challengesAtRunStart = GetChallengeDisplayData();
+            _allDoneBonusAtRunStart = _provider != null && _provider.AllDoneBonusGranted;
 
             _timeAlive = 0f;
             _riseAccumulator = 0f;
@@ -564,6 +557,8 @@ namespace StackSurge
                 _next = RollIncomingTile();
             }
 
+            SfxPlayer.Play(Sfx.Drop);
+
             if (placed == TileKind.Bomb)
             {
                 StartCoroutine(ExplodeBombAndResolve(col, row));
@@ -573,6 +568,7 @@ namespace StackSurge
 
             _board.SetCell(col, row, placed);
             _view.RefreshGrid(_board.Cells);
+            _view.AnimateDrop(col, row);
             UpdateHud();
 
             StartCoroutine(ResolveMatchesAnimCoroutine());
@@ -588,10 +584,24 @@ namespace StackSurge
                 MatchFinder.CollectMatches(_board.Cells, _board.Width, _board.Height, matches, out int largestInWave);
                 if (matches.Count == 0) break;
 
+                // Let the tile that was just dropped land before its match pops.
+                float landing = _view.DropRemaining;
+                if (landing > 0f) yield return new WaitForSeconds(landing);
+
+                // Sound as the pop starts, not after it, so a clear feels instant; the pitch climbs with the combo.
+                // The wave is timed (for the combo window) here too, so the pitch and the score always agree.
+                float waveTime = Time.time;
+                float centreRow = 0f, centreCol = 0f;
+                foreach (var m in matches) { centreRow += m.r; centreCol += m.c; }
+                centreRow /= matches.Count;
+                centreCol /= matches.Count;
+                bool hasFullRow = HasEntireRowInMatch(matches);
+                if (largestInWave >= 4 || hasFullRow) SfxPlayer.Play(Sfx.ClearBig);
+                else SfxPlayer.Play(Sfx.Clear, SfxPlayer.ComboPitch(_score.PeekNextComboMultiplier(waveTime)));
+
                 // Animate/blink tiles before clearing
                 yield return _view.BlinkTilesCoroutine(matches, _board.Cells, _blinkTime);
 
-                bool hasFullRow = HasEntireRowInMatch(matches);
                 int cleared = matches.Count;
 
                 foreach (var m in matches)
@@ -603,15 +613,22 @@ namespace StackSurge
                 yield return AnimateGravityCoroutine();
 
                 bool perfect = _board.IsBoardEmpty();
+                _runRows += CountFullRows(matches);
+                if (perfect) _runPerfects++;
+                if (largestInWave >= 5) _runMatch5s++;
                 int prevCombo = _score.CurrentComboMultiplier;
                 _score.RegisterClearWave(largestInWave, cleared, hasFullRow, perfect,
-                    Time.time, out int pointsAdded, out int comboMult, out float carryMult);
+                    waveTime, out int pointsAdded, out int comboMult, out float carryMult);
 
                 _view.TriggerClearShake(cleared);
+                _view.ShowPointsPopup(centreRow, centreCol, pointsAdded, comboMult);
 
                 // ── Reward toasts ────────────────────────────────────────────
                 if (perfect)
+                {
                     _view.ShowRewardToast("PERFECT CLEAR!", "+2000", RewardToastStyle.PerfectClear);
+                    SfxPlayer.Play(Sfx.NewBest);
+                }
                 else if (hasFullRow)
                     _view.ShowRewardToast("ROW CLEAR", "+200", RewardToastStyle.RowClear);
 
@@ -640,9 +657,32 @@ namespace StackSurge
                 _view.ShowSlowRiseBadge(_settings.SlowFillBuffSeconds);
             }
 
-            _challenges.TickRun(_timeAlive, _score.TotalScore, _score.BestComboMultiplier);
+            _challenges.TickRun(CurrentRunStats(), runEnded: false);
             UpdateHud();
         }
+
+        int CountFullRows(System.Collections.Generic.HashSet<(int r, int c)> matchSet)
+        {
+            int rows = 0;
+            for (int r = 0; r < _board.Height; r++)
+            {
+                bool full = true;
+                for (int c = 0; c < _board.Width && full; c++) full = matchSet.Contains((r, c));
+                if (full) rows++;
+            }
+            return rows;
+        }
+
+        RunStats CurrentRunStats() => new RunStats
+        {
+            SecondsAlive = _timeAlive,
+            Score = _score.TotalScore,
+            BestComboMultiplier = _score.BestComboMultiplier,
+            RowsCleared = _runRows,
+            PerfectClears = _runPerfects,
+            Bombs = _runBombs,
+            Match5s = _runMatch5s,
+        };
 
         bool HasEntireRowInMatch(System.Collections.Generic.HashSet<(int r, int c)> matchSet)
         {
@@ -722,10 +762,16 @@ namespace StackSurge
             _resolvingMatches = true;
             _board.SetCell(col, row, TileKind.Bomb);
             _view.RefreshGrid(_board.Cells);
+            _view.AnimateDrop(col, row);
+            float landing = _view.DropRemaining;
+            if (landing > 0f) yield return new WaitForSeconds(landing);
 
             yield return _view.BlinkBombAreaCoroutine(col, row, _board.Cells, BombBlinkSeconds);
 
             _board.ExplodeBomb3x3(col, row);
+            _runBombs++;
+            SfxPlayer.Play(Sfx.Bomb);
+            Haptics.Medium();
             
             for (int r = 0; r < _settings.Rows; r++)
             for (int c = 0; c < _settings.Columns; c++)
@@ -743,11 +789,13 @@ namespace StackSurge
         {
             _resolvingMatches = true;
 
+            _view.SettleTiles(); // a tile still landing must not animate after the rows shift under it
             if (!_board.TryRiseRow(RollRisingCell))
             {
                 EndRun();
                 yield break;
             }
+            SfxPlayer.Play(Sfx.Rise);
 
             _view.RefreshGrid(_board.Cells);
 
@@ -760,8 +808,24 @@ namespace StackSurge
         void EndRun()
         {
             bool isNewBest = RecordRun();
-            _view.ShowGameOver(_score.TotalScore, _save.DailyBest, _save.AllTimeHigh, _save.Streak, isNewBest);
+            SfxPlayer.Play(isNewBest ? Sfx.NewBest : Sfx.GameOver);
+            _view.ShowGameOver(new GameOverData
+            {
+                Score = _score.TotalScore,
+                IsNewBest = isNewBest,
+                SecondsSurvived = _timeAlive,
+                DailyBest = _save.DailyBest,
+                AllTimeHigh = _save.AllTimeHigh,
+                Streak = _save.Streak,
+                StreakRewardThisRun = _streakRewardThisRun,
+                ChallengesBefore = _challengesAtRunStart,
+                Challenges = GetChallengeDisplayData(),
+                AllDoneBonusGranted = _provider != null && _provider.AllDoneBonusGranted,
+                AllDoneBonusThisRun = _provider != null && _provider.AllDoneBonusGranted && !_allDoneBonusAtRunStart,
+            });
         }
+
+        bool _streakRewardThisRun;
 
         /// <summary>
         /// Saves the finished run: challenges, best scores, streak, cloud save and leaderboard submission.
@@ -771,9 +835,10 @@ namespace StackSurge
         {
             _playing = false;
             ClearTapBuffer();
-            _challenges.TickRun(_timeAlive, _score.TotalScore, _score.BestComboMultiplier);
+            _challenges.TickRun(CurrentRunStats(), runEnded: true);
             int previousBest = _save.AllTimeHigh; // capture before RegisterRunEnd updates it
             LocalProgress.RegisterRunEnd(_score.TotalScore, _save);
+            _streakRewardThisRun = StreakReward.TryGrant(_save, _provider);
             NotificationService.Instance?.RecordRunCompleted(); // learns the usual play hour for reminder timing
 
             if (_provider != null)
@@ -782,9 +847,19 @@ namespace StackSurge
             }
 
             if (_leaderboardService != null)
-                _ = _leaderboardService.SubmitScoreAsync(_score.TotalScore, previousBest);
+                _ = SubmitScoreAsync(_score.TotalScore, previousBest);
 
             return _score.TotalScore > previousBest;
+        }
+
+        /// <summary>Submits the run, then reloads the leaderboard in the background so it opens with this score in it.</summary>
+        async Task SubmitScoreAsync(int score, int previousBest)
+        {
+            try { await _leaderboardService.SubmitScoreAsync(score, previousBest); }
+            catch (Exception e) { Debug.LogWarning("[StackSurgeGame] Score submit failed: " + e.Message); }
+            if (_leaderboardManager == null) return;
+            int? rank = await _leaderboardManager.RefreshAfterSubmitAsync();
+            if (this != null && _view != null) _view.SetGameOverRank(rank);
         }
 
         /// <summary>Pause → Main Menu (after the confirm dialog): the run counts, exactly like a game over.</summary>
@@ -846,8 +921,11 @@ namespace StackSurge
             float nextRise = Mathf.Max(0f, interval - _riseAccumulator);
             float graceLeft = Mathf.Max(0f, _settings.InitialRiseGraceSeconds - _timeAlive);
             bool inGrace = graceLeft > 0f;
+            float riseProgress = inGrace
+                ? (_settings.InitialRiseGraceSeconds > 0f ? _timeAlive / _settings.InitialRiseGraceSeconds : 1f)
+                : (interval > 0f ? _riseAccumulator / interval : 0f);
 
-            _view.UpdateHud(_score.TotalScore, _timeAlive, inGrace ? graceLeft : nextRise, inGrace, _current, _next);
+            _view.UpdateHud(_score.TotalScore, _timeAlive, inGrace ? graceLeft : nextRise, riseProgress, inGrace, _current, _next);
         }
 
         ChallengeDisplayData[] GetChallengeDisplayData()

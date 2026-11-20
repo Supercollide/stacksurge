@@ -32,6 +32,13 @@ namespace StackSurge.Core
             _survivalSeconds = 0f;
         }
 
+        /// <summary>
+        /// The combo multiplier a clear registered at <paramref name="now"/> would get, without registering it
+        /// (lets feedback such as the clear sound match the combo before the wave is scored).
+        /// </summary>
+        public int PeekNextComboMultiplier(float now) =>
+            now - _lastClearTime <= _comboWindow ? Mathf.RoundToInt(Mathf.Min(_comboMultiplier + 1f, 5f)) : 1;
+
         public void AddDirectPoints(int points)
         {
             TotalScore += points;

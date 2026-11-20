@@ -3,11 +3,48 @@ using UnityEngine;
 
 namespace StackSurge.Meta
 {
+    /// <summary>
+    /// What a challenge counts. The first three are the original ones (keep their order: assets and Remote Config
+    /// store the name, saves don't). "InRun" goals must be reached within one run; "Today" goals add up across all of
+    /// the day's runs.
+    /// </summary>
     public enum ChallengeType
     {
         ScoreInRun,
         SurviveSeconds,
-        MaxComboMultiplier
+        MaxComboMultiplier,
+        RowsClearedInRun,
+        PerfectClearsInRun,
+        BombsInRun,
+        Match5InRun,
+        RowsClearedToday,
+        ScoreToday,
+        RunsToday
+    }
+
+    public static class ChallengeTypeExtensions
+    {
+        /// <summary>True for goals that add up across all of the day's runs.</summary>
+        public static bool IsDayTotal(this ChallengeType type) =>
+            type == ChallengeType.RowsClearedToday || type == ChallengeType.ScoreToday || type == ChallengeType.RunsToday;
+
+        /// <summary>Goals in the same family aren't picked together on one day (no "score" twice).</summary>
+        public static int Family(this ChallengeType type) => type switch
+        {
+            ChallengeType.ScoreInRun or ChallengeType.ScoreToday => 0,
+            ChallengeType.RowsClearedInRun or ChallengeType.RowsClearedToday => 1,
+            _ => 2 + (int)type,
+        };
+    }
+
+    public static class ChallengeDifficulty
+    {
+        public const string Easy = "easy";
+        public const string Medium = "medium";
+        public const string Hard = "hard";
+
+        public static int Rank(string difficulty) => difficulty switch { Easy => 0, Hard => 2, _ => 1 };
+        public static string Label(string difficulty) => difficulty switch { Easy => "EASY", Hard => "HARD", _ => "MEDIUM" };
     }
 
     [CreateAssetMenu(fileName = "Challenge", menuName = "Stack Surge/Challenge")]
@@ -20,6 +57,7 @@ namespace StackSurge.Meta
         public int TargetValue;
         public int RewardPoints = 500;
         public string Category = "daily";
+        public string Difficulty = ChallengeDifficulty.Medium;
 
         /// <summary>
         /// Creates a runtime ChallengeDefinition from a serialisable data object
@@ -35,6 +73,7 @@ namespace StackSurge.Meta
             inst.TargetValue = data.TargetValue;
             inst.RewardPoints = data.RewardPoints > 0 ? data.RewardPoints : 500;
             inst.Category = string.IsNullOrEmpty(data.Category) ? "daily" : data.Category;
+            inst.Difficulty = string.IsNullOrEmpty(data.Difficulty) ? ChallengeDifficulty.Medium : data.Difficulty.ToLowerInvariant();
             return inst;
         }
     }
@@ -52,6 +91,7 @@ namespace StackSurge.Meta
         public int TargetValue;
         public int RewardPoints;
         public string Category;
+        public string Difficulty; // "easy", "medium" or "hard"
     }
 
     /// <summary>
@@ -70,6 +110,8 @@ namespace StackSurge.Meta
     {
         public string Title;
         public string Description;
+        public ChallengeType Type; // how Progress reads: points, seconds or a combo multiplier
+        public string Difficulty;
         public int Progress;
         public int TargetValue;
         public bool Completed;
