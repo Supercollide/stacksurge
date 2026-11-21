@@ -1,0 +1,212 @@
+[
+  {
+    "Id": "e_score",
+    "Title": "Score 6,000",
+    "Description": "Reach 6,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 6000,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_rows",
+    "Title": "Clear 3 rows",
+    "Description": "Clear 3 full rows in one run.",
+    "Type": "RowsClearedInRun",
+    "TargetValue": 3,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_combo",
+    "Title": "Combo x3",
+    "Description": "Reach a x3 combo in one run.",
+    "Type": "MaxComboMultiplier",
+    "TargetValue": 3,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_runs",
+    "Title": "Play 3 runs",
+    "Description": "Finish 3 runs today.",
+    "Type": "RunsToday",
+    "TargetValue": 3,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_bombs",
+    "Title": "Set off 2 bombs",
+    "Description": "Set off 2 bombs in one run.",
+    "Type": "BombsInRun",
+    "TargetValue": 2,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_perfect",
+    "Title": "Perfect clear",
+    "Description": "Empty the whole board once.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 1,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_survive",
+    "Title": "Last 2:00",
+    "Description": "Stay alive for 2 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 120,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "m_score",
+    "Title": "Score 15,000",
+    "Description": "Reach 15,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 15000,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_rows",
+    "Title": "Clear 8 rows",
+    "Description": "Clear 8 full rows in one run.",
+    "Type": "RowsClearedInRun",
+    "TargetValue": 8,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_combo",
+    "Title": "Combo x4",
+    "Description": "Reach a x4 combo in one run.",
+    "Type": "MaxComboMultiplier",
+    "TargetValue": 4,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_perfect",
+    "Title": "2 perfect clears",
+    "Description": "Empty the board twice in one run.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 2,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_match5",
+    "Title": "Match 5",
+    "Description": "Match 5 tiles in a line.",
+    "Type": "Match5InRun",
+    "TargetValue": 1,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_survive",
+    "Title": "Last 4:00",
+    "Description": "Stay alive for 4 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 240,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_rows_today",
+    "Title": "20 rows today",
+    "Description": "Clear 20 rows across today's runs.",
+    "Type": "RowsClearedToday",
+    "TargetValue": 20,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "h_score",
+    "Title": "Score 40,000",
+    "Description": "Reach 40,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 40000,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_combo",
+    "Title": "Combo x5",
+    "Description": "Reach a x5 combo in one run.",
+    "Type": "MaxComboMultiplier",
+    "TargetValue": 5,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_perfect",
+    "Title": "3 perfect clears",
+    "Description": "Empty the board 3 times in one run.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 3,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_rows",
+    "Title": "Clear 15 rows",
+    "Description": "Clear 15 full rows in one run.",
+    "Type": "RowsClearedInRun",
+    "TargetValue": 15,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_match5",
+    "Title": "Match 5, three times",
+    "Description": "Match 5 tiles in a line, 3 times.",
+    "Type": "Match5InRun",
+    "TargetValue": 3,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_survive",
+    "Title": "Last 7:00",
+    "Description": "Stay alive for 7 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 420,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_score_today",
+    "Title": "60,000 today",
+    "Description": "Score 60,000 across today's runs.",
+    "Type": "ScoreToday",
+    "TargetValue": 60000,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  }
+]

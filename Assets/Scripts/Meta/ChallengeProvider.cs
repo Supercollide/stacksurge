@@ -291,6 +291,9 @@ namespace StackSurge.Meta
             Claimed = new bool[count];
             _save.ChallengeSetDate = today;
             _save.ChallengeSetIds = ids;
+            // The all-done bonus belongs to the set it was earned on. Without this, finishing one set and then
+            // getting another the same day (a Remote Config change) showed "completed" and blocked the new bonus.
+            _save.ChallengeBonusDate = "";
             StoreLocally();
             return true;
         }

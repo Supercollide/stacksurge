@@ -273,7 +273,7 @@ namespace StackSurge.UI
         void ShowRow(ChallengeRow row, ChallengeDisplayData item, ChallengeDisplayData before, bool hasBefore, int index)
         {
             row.Title.text = item.Title;
-            row.Detail.text = $"{ChallengeDifficulty.Label(item.Difficulty)}  <color=#F5C04A>+{FormatNumber(item.RewardPoints)}</color>";
+            row.Detail.text = DetailText(item, claimed: item.Claimed);
             row.Claim.onClick.RemoveAllListeners();
             row.Claim.onClick.AddListener(() => Claim(row, item, index));
             row.Claim.transform.DOKill();
@@ -318,6 +318,12 @@ namespace StackSurge.UI
             }
         }
 
+        // Once claimed, the amount moves to the right ("+1,000 NEXT RUN", later "CLAIMED"); keeping it on this line
+        // too made claimed rows look like they still had points to collect.
+        static string DetailText(ChallengeDisplayData item, bool claimed) => claimed
+            ? ChallengeDifficulty.Label(item.Difficulty)
+            : $"{ChallengeDifficulty.Label(item.Difficulty)}  <color=#F5C04A>+{FormatNumber(item.RewardPoints)}</color>";
+
         static void SetRowDone(ChallengeRow row, bool done)
         {
             row.FillImage.color = done ? UiSkin.Teal : UiSkin.Primary;
@@ -329,6 +335,7 @@ namespace StackSurge.UI
             _onClaim?.Invoke(index);
             SfxPlayer.Play(Sfx.UiTap);
             row.Claim.gameObject.SetActive(false);
+            row.Detail.text = DetailText(item, claimed: true);
             row.Value.gameObject.SetActive(true);
             row.Value.color = UiSkin.Teal;
             row.Value.text = $"+{FormatNumber(item.RewardPoints)} NEXT RUN"; // claimed points start the next run
