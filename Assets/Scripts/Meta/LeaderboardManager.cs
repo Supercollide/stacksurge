@@ -329,14 +329,11 @@ namespace StackSurge.Meta
             ApplyBadges();
         }
 
-        /// <summary>Puts each row's badge on it. When any row has one, every name moves over so the names line up.</summary>
+        /// <summary>Puts each row's badge on it, or the player's block when they show none.</summary>
         private void ApplyBadges()
         {
-            bool any = false;
             foreach (var row in _rows)
-                if (row != null && AchievementCatalog.TryParseBadge(BadgeFor(row.IsCurrentPlayer, row.PlayerId), out _, out _)) { any = true; break; }
-            foreach (var row in _rows)
-                if (row != null) row.SetBadge(BadgeFor(row.IsCurrentPlayer, row.PlayerId), BadgeTapped, any);
+                if (row != null) row.SetBadge(BadgeFor(row.IsCurrentPlayer, row.PlayerId), BadgeTapped);
         }
 
         private void AddRow(LeaderboardEntryData entry, int index, FriendRelationState relation, bool animate)

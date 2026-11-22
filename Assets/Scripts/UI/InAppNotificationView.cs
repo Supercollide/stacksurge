@@ -363,7 +363,6 @@ namespace StackSurge.UI
 
             _iconImage.sprite = toast.Icon != null ? toast.Icon : UiSprites.Circle;
             if (toast.Icon != null) _iconImage.color = Color.white;
-            _iconImage.rectTransform.localScale = Vector3.one * (toast.Icon != null ? 1.3f : 1f); // badges have empty margins
         }
 
         private void OnToastTapped()

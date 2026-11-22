@@ -5,47 +5,48 @@ using DG.Tweening;
 using StackSurge.Meta;
 using TMPro;
 using UnityEngine;
-using UnityEngine.TextCore.LowLevel;
 using UnityEngine.UI;
 
 namespace StackSurge.UI
 {
     /// <summary>
-    /// The Achievements screen. Personal records (best score, longest chain, longest streak) sit on cards at the top,
-    /// each with the record on its badge and the day it was set. The awards for all-time totals follow in a grid:
-    /// the current badge with the goal that earned it, and how many of the six tiers are done. Tapping either opens
-    /// the details: every tier, progress to the next one, and the button that shows the badge on the profile.
+    /// The Achievements screen, in two wells. Personal records: best score on a wide tile (the number the leaderboard
+    /// ranks by), longest chain and longest streak on half tiles, each with the record, the day it was set and its tier
+    /// meter. Awards for all-time totals: a grid of tiles, three to a row, each with its badge, a meter of six blocks for
+    /// its tiers and the progress to the next one. Tiles are raised like the board's blocks; the badge on the profile
+    /// has a gold edge and an "ON PROFILE" tag. Tapping a tile opens the details: every tier, progress to the next one,
+    /// and the button that shows the badge on the profile.
     /// Built in code, on its own overlay canvas above the main UI (below Settings and toasts).
     /// </summary>
     public class AchievementsUI : MonoBehaviour
     {
         AchievementService _service;
         TMP_FontAsset _font;
-        TMP_FontAsset _numberFont;
 
         GameObject _overlayObj;
         RectTransform _overlayRect;
         RectTransform _dialogPanel;
         CanvasGroup _canvasGroup;
         TextMeshProUGUI _countText;
+        TextMeshProUGUI _recordsCount;
+        TextMeshProUGUI _awardsCount;
         ScrollRect _scroll;
-        GridLayoutGroup _recordsGrid;
         GridLayoutGroup _awardsGrid;
         readonly List<Tile> _tiles = new List<Tile>();
-        Material _numberMaterial;
 
         // Details
         GameObject _detailObj;
         CanvasGroup _detailGroup;
         RectTransform _detailPanel;
         AchievementDef _detailDef;
-        BadgeView _detailBadge;
+        Image _detailBadge;
         TextMeshProUGUI _detailName;
         TextMeshProUGUI _detailTier;
         TextMeshProUGUI _detailDate;
         TextMeshProUGUI _detailNext;
         GameObject _detailBar;
         RectTransform _detailBarFill;
+        Image _detailBarFillImage;
         TextMeshProUGUI _detailProgress;
         Image[] _stripEmblems;
         TextMeshProUGUI[] _stripGoals;
@@ -53,22 +54,20 @@ namespace StackSurge.UI
         Image _profileButtonBg;
         TextMeshProUGUI _profileButtonLabel;
 
-        /// <summary>A badge sprite with a number across its lower edge.</summary>
-        class BadgeView
-        {
-            public RectTransform Rect;
-            public Image Emblem;
-            public TextMeshProUGUI Number;
-        }
+        enum Kind { Hero, Half, Award }
 
         class Tile
         {
             public AchievementDef Def;
-            public Image Background;
-            public BadgeView Badge;
+            public Kind Kind;
+            public Image Badge;
             public TextMeshProUGUI Name;
-            public TextMeshProUGUI Sub;
-            public TextMeshProUGUI Tag;
+            public TextMeshProUGUI Value;
+            public TextMeshProUGUI Date;
+            public TextMeshProUGUI Count;
+            public Image[] Meter;
+            public GameObject Outline;
+            public GameObject Tag;
         }
 
         // Layout, in reference units of the 1080x1920 canvas
@@ -80,31 +79,34 @@ namespace StackSurge.UI
         const float CloseButtonHeight = 92f;
         const float ScreenMargin = 40f;
         const int Columns = 3;
-        const float ColumnGap = 16f;
         const float ListSpacing = 16f;
-        const float SectionTitleHeight = 50f;
-        const float RecordCardHeight = 306f;
-        const float RecordEmblemSize = 172f;
-        const float AwardCellHeight = 328f; // badge, then one line each for the name, tier count and profile tag
-        const float AwardRowGap = 16f;
-        const float AwardEmblemSize = 208f;
+        const int WellPadSide = 16, WellPadTop = 12, WellPadBottom = 18;
+        const float WellSpacing = 12f;
+        const float WellHeaderHeight = 30f;
+        const float WellRadius = 22f;
+        const float TileGap = 14f;
+        const float TileRadius = 18f;
+        const float TileLip = 6f;      // the darker edge under each tile, like the board's blocks
+        const float HeroHeight = 178f;
+        const float HalfHeight = 180f;
+        const float AwardHeight = 276f;
+        const float HeroBadgeSize = 140f;
+        const float HalfBadgeSize = 104f;
+        const float AwardBadgeSize = 132f;
         const float DetailWidth = 860f;
-        const float DetailEmblemSize = 260f;
+        const float DetailEmblemSize = 230f;
         const float StripEmblemSize = 96f;
         const float BarHeight = 16f;
-        /// <summary>Where the number's middle sits, as a fraction of the badge's height from its bottom.
-        /// The badges' lowest points run from 74% (tier 1) to 98% (tier 6) of the sprite, so it overlaps them all.</summary>
-        const float NumberCenter = 0.16f;
-        // The badge numbers' font: the UI font again with more room around each glyph, so the outline can be thick.
-        const int NumberSamplingSize = 80;
-        const int NumberAtlasPadding = 18;
-        const string NumberCharacters = "0123456789,.KM";
 
-        static readonly Color CardColor = UiSkin.Board;
-        static readonly Color ShownColor = new Color32(0x33, 0x31, 0x2A, 0xFF); // the leaderboard's "you" row tint, solid
+        static readonly Color WellColor = new Color32(0x11, 0x18, 0x27, 0xFF);
+        static readonly Color TileFace = new Color32(0x1E, 0x28, 0x40, 0xFF);
+        static readonly Color TileLipColor = new Color32(0x13, 0x1A, 0x2B, 0xFF);
+        static readonly Color EmptyBlock = new Color32(0x2A, 0x33, 0x49, 0xFF);
+        static readonly Color LabelColor = new Color32(0xC9, 0xD1, 0xE0, 0xFF);
+        static readonly Color SectionColor = new Color32(0xAE, 0xB8, 0xCE, 0xFF);
+        static readonly Color TagTextColor = new Color32(0x2A, 0x22, 0x10, 0xFF);
         static readonly Color Clear = new Color(0f, 0f, 0f, 0f);
         static readonly Color LockedTint = new Color32(0x3A, 0x44, 0x5E, 0xFF);   // a badge not earned yet: a dark shape
-        static readonly Color LockedNumber = new Color32(0x6B, 0x76, 0x92, 0xFF);
         static readonly Color LockedTierTint = new Color32(0x3A, 0x44, 0x5E, 0x80); // half see-through, so the strip's bright tiers go dark too
 
         public bool IsOpen { get; private set; }
@@ -114,7 +116,6 @@ namespace StackSurge.UI
         {
             _service = service;
             _font = font != null ? font : TMP_Settings.defaultFontAsset;
-            _numberFont = CreateNumberFont(_font);
             Build();
             if (_service != null) _service.Changed += OnChanged;
         }
@@ -122,13 +123,6 @@ namespace StackSurge.UI
         void OnDestroy()
         {
             if (_service != null) _service.Changed -= OnChanged;
-            if (_numberMaterial != null) Destroy(_numberMaterial);
-            if (_numberFont != null)
-            {
-                foreach (var texture in _numberFont.atlasTextures) if (texture != null) Destroy(texture);
-                if (_numberFont.material != null) Destroy(_numberFont.material);
-                Destroy(_numberFont);
-            }
         }
 
         void OnChanged()
@@ -190,12 +184,28 @@ namespace StackSurge.UI
             SetFixedHeight(hint.gameObject, HintHeight);
 
             Transform list = BuildScrollView(layoutObj.transform);
-            AddSectionTitle(list, "Personal records");
-            _recordsGrid = AddGrid(list, "Records", RecordCardHeight);
-            AddSectionTitle(list, "Awards");
-            _awardsGrid = AddGrid(list, "Awards", AwardCellHeight);
+            Transform records = AddWell(list, "Records", "PERSONAL RECORDS", out _recordsCount);
+            Transform awards = AddWell(list, "Awards", "AWARDS", out _awardsCount);
+            _awardsGrid = AddGrid(awards);
+
+            Transform halves = null;
+            bool heroDone = false;
             foreach (var def in AchievementCatalog.All)
-                _tiles.Add(BuildTile(def.IsRecord ? _recordsGrid.transform : _awardsGrid.transform, def));
+            {
+                if (!def.IsRecord)
+                {
+                    _tiles.Add(BuildTile(_awardsGrid.transform, def, Kind.Award));
+                    continue;
+                }
+                if (!heroDone)
+                {
+                    heroDone = true; // the first record, best score, leads
+                    _tiles.Add(BuildTile(records, def, Kind.Hero));
+                    continue;
+                }
+                if (halves == null) halves = AddTileRow(records);
+                _tiles.Add(BuildTile(halves, def, Kind.Half));
+            }
 
             var close = AddButton(layoutObj.transform, "CloseButton", "Close", UiSkin.Primary, out _, out _);
             SetFixedHeight(close.gameObject, CloseButtonHeight);
@@ -227,7 +237,7 @@ namespace StackSurge.UI
             var scrollObj = new GameObject("List", typeof(RectTransform));
             scrollObj.transform.SetParent(parent, false);
             var scrollLayout = scrollObj.AddComponent<LayoutElement>();
-            scrollLayout.minHeight = RecordCardHeight;
+            scrollLayout.minHeight = HeroHeight;
             scrollLayout.flexibleHeight = 1;
 
             var viewportObj = new GameObject("Viewport", typeof(RectTransform));
@@ -263,136 +273,212 @@ namespace StackSurge.UI
             return contentObj.transform;
         }
 
-        void AddSectionTitle(Transform parent, string text)
-        {
-            var t = AddText(parent, "Section", text, 34, FontStyles.Bold, Color.white);
-            t.alignment = TextAlignmentOptions.BottomLeft;
-            t.textWrappingMode = TextWrappingModes.NoWrap;
-            SetFixedHeight(t.gameObject, SectionTitleHeight);
-        }
-
-        static GridLayoutGroup AddGrid(Transform parent, string name, float cellHeight)
+        /// <summary>A darker inset that groups a section: its title and count on top, its tiles below.</summary>
+        Transform AddWell(Transform parent, string name, string title, out TextMeshProUGUI count)
         {
             var obj = new GameObject(name, typeof(RectTransform));
+            obj.transform.SetParent(parent, false);
+            var bg = obj.AddComponent<Image>();
+            bg.color = WellColor;
+            bg.raycastTarget = false;
+            UiSprites.ApplyRounded(bg, WellRadius);
+            var v = obj.AddComponent<VerticalLayoutGroup>();
+            v.padding = new RectOffset(WellPadSide, WellPadSide, WellPadTop, WellPadBottom);
+            v.spacing = WellSpacing;
+            v.childControlWidth = v.childControlHeight = true;
+            v.childForceExpandWidth = true;
+            v.childForceExpandHeight = false;
+
+            var header = new GameObject("Header", typeof(RectTransform));
+            header.transform.SetParent(obj.transform, false);
+            SetFixedHeight(header, WellHeaderHeight);
+            var label = AddText(header.transform, "Title", title, 20, FontStyles.Bold, SectionColor);
+            Stretch(label.rectTransform);
+            label.alignment = TextAlignmentOptions.MidlineLeft;
+            label.textWrappingMode = TextWrappingModes.NoWrap;
+            label.characterSpacing = 6f; // matches the profile card's labels (ALL-TIME HIGH, STREAK)
+            count = AddText(header.transform, "Count", "", 20, FontStyles.Bold, UiSkin.TextMuted);
+            Stretch(count.rectTransform);
+            count.alignment = TextAlignmentOptions.MidlineRight;
+            count.textWrappingMode = TextWrappingModes.NoWrap;
+            return obj.transform;
+        }
+
+        static Transform AddTileRow(Transform parent)
+        {
+            var obj = new GameObject("Row", typeof(RectTransform));
+            obj.transform.SetParent(parent, false);
+            SetFixedHeight(obj, HalfHeight);
+            var h = obj.AddComponent<HorizontalLayoutGroup>();
+            h.spacing = TileGap;
+            h.childControlWidth = h.childControlHeight = true;
+            h.childForceExpandWidth = h.childForceExpandHeight = true;
+            return obj.transform;
+        }
+
+        static GridLayoutGroup AddGrid(Transform parent)
+        {
+            var obj = new GameObject("Grid", typeof(RectTransform));
             obj.transform.SetParent(parent, false);
             var grid = obj.AddComponent<GridLayoutGroup>();
             grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
             grid.constraintCount = Columns;
             grid.startAxis = GridLayoutGroup.Axis.Horizontal;
             grid.childAlignment = TextAnchor.UpperLeft;
-            grid.spacing = new Vector2(ColumnGap, AwardRowGap);
-            grid.cellSize = new Vector2(288f, cellHeight); // width set to fit in ResizeDialog
+            grid.spacing = new Vector2(TileGap, TileGap);
+            grid.cellSize = new Vector2(260f, AwardHeight); // width set to fit in ResizeDialog
             return grid;
         }
 
-        Tile BuildTile(Transform parent, AchievementDef def)
+        Tile BuildTile(Transform parent, AchievementDef def, Kind kind)
         {
-            bool record = def.IsRecord;
-            var tile = new Tile { Def = def };
-            var obj = new GameObject((record ? "Record_" : "Award_") + def.Key, typeof(RectTransform));
+            var tile = new Tile { Def = def, Kind = kind };
+            var obj = new GameObject(kind + "_" + def.Key, typeof(RectTransform));
             obj.transform.SetParent(parent, false);
-            tile.Background = obj.AddComponent<Image>(); // clear behind an award, but still catches the tap
-            UiSprites.ApplyRounded(tile.Background, 20f);
+            if (kind == Kind.Hero) SetFixedHeight(obj, HeroHeight);
+
+            // A raised tile: the face sits on a darker lip, like the board's blocks.
+            var lip = obj.AddComponent<Image>();
+            lip.color = TileLipColor;
+            UiSprites.ApplyRounded(lip, TileRadius);
+            var faceRect = AddStretched(obj.transform, "Face");
+            faceRect.offsetMin = new Vector2(0f, TileLip);
+            var face = faceRect.gameObject.AddComponent<Image>();
+            face.color = TileFace;
+            UiSprites.ApplyRounded(face, TileRadius);
             var button = obj.AddComponent<Button>();
-            button.targetGraphic = tile.Background;
+            button.targetGraphic = face;
             button.transition = Selectable.Transition.None;
             button.onClick.AddListener(() => OnTileTapped(tile));
+            Transform f = faceRect;
 
-            float size = record ? RecordEmblemSize : AwardEmblemSize;
-            float top = record ? 14f : 4f;
-            tile.Badge = BuildBadge(obj.transform, size, record ? 40f : 48f);
-            var br = tile.Badge.Rect;
-            br.anchorMin = br.anchorMax = br.pivot = new Vector2(0.5f, 1f);
-            br.anchoredPosition = new Vector2(0f, -top);
+            switch (kind)
+            {
+                case Kind.Hero:
+                    tile.Badge = AddBadge(f, new Vector2(0f, 0.5f), new Vector2(20f, 0f), HeroBadgeSize);
+                    tile.Name = AddLine(f, 180f, 20f, 18f, 28f, 22, LabelColor, TextAlignmentOptions.MidlineLeft);
+                    tile.Name.text = def.Name;
+                    tile.Date = AddLine(f, 180f, 20f, 18f, 28f, 18, UiSkin.TextMuted, TextAlignmentOptions.MidlineRight);
+                    tile.Date.fontStyle = FontStyles.Normal;
+                    tile.Value = AddLine(f, 180f, 20f, 44f, 64f, 56, Color.white, TextAlignmentOptions.MidlineLeft, 32);
+                    tile.Meter = AddMeter(f, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(180f, -120f), 22f, 5f);
+                    float meterWidth = MeterWidth(22f, 5f);
+                    tile.Count = AddLine(f, 180f + meterWidth + 14f, 20f, 120f, 22f, 18, UiSkin.TextMuted, TextAlignmentOptions.MidlineLeft);
+                    tile.Count.fontStyle = FontStyles.Normal;
+                    break;
+                case Kind.Half:
+                    tile.Badge = AddBadge(f, new Vector2(0f, 0.5f), new Vector2(14f, 0f), HalfBadgeSize);
+                    tile.Name = AddLine(f, 132f, 14f, 20f, 26f, 20, LabelColor, TextAlignmentOptions.MidlineLeft, 16);
+                    tile.Name.text = def.Name;
+                    tile.Value = AddLine(f, 132f, 14f, 46f, 48f, 40, Color.white, TextAlignmentOptions.MidlineLeft, 26);
+                    tile.Date = AddLine(f, 132f, 14f, 96f, 24f, 18, UiSkin.TextMuted, TextAlignmentOptions.MidlineLeft, 14);
+                    tile.Date.fontStyle = FontStyles.Normal;
+                    tile.Meter = AddMeter(f, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(132f, -128f), 18f, 4f);
+                    break;
+                default:
+                    tile.Badge = AddBadge(f, new Vector2(0.5f, 1f), new Vector2(0f, -18f), AwardBadgeSize);
+                    tile.Name = AddLine(f, 8f, 8f, 160f, 28f, 21, Color.white, TextAlignmentOptions.Center, 16);
+                    tile.Name.text = def.Name;
+                    tile.Meter = AddMeter(f, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -198f), 18f, 4f);
+                    tile.Count = AddLine(f, 8f, 8f, 226f, 26f, 18, UiSkin.TextMuted, TextAlignmentOptions.Center, 14);
+                    tile.Count.fontStyle = FontStyles.Normal;
+                    break;
+            }
 
-            // Name, then the date or tier count, then the profile tag, stacked under the badge.
-            var textObj = new GameObject("Text", typeof(RectTransform));
-            textObj.transform.SetParent(obj.transform, false);
-            var trt = (RectTransform)textObj.transform;
-            Stretch(trt);
-            trt.offsetMin = new Vector2(8f, 8f);
-            trt.offsetMax = new Vector2(-8f, -(top + size + 6f));
-            var v = textObj.AddComponent<VerticalLayoutGroup>();
-            v.childAlignment = TextAnchor.UpperCenter;
-            v.spacing = 2f;
-            v.childControlWidth = v.childControlHeight = true;
-            v.childForceExpandWidth = true;
-            v.childForceExpandHeight = false;
+            // The badge on the profile: a gold edge, and a tag sitting on the tile's top edge.
+            var outline = AddStretched(obj.transform, "OnProfile").gameObject.AddComponent<Image>();
+            UiSprites.ApplyRoundedOutline(outline, TileRadius);
+            outline.color = UiSkin.Accent;
+            outline.raycastTarget = false;
+            tile.Outline = outline.gameObject;
 
-            float nameSize = record ? 28 : 30;
-            tile.Name = AddText(textObj.transform, "Name", def.Name, nameSize, FontStyles.Bold, Color.white);
-            tile.Name.alignment = TextAlignmentOptions.Top;
-            tile.Name.textWrappingMode = TextWrappingModes.NoWrap; // shrinks to fit instead, so every row is the same height
-            tile.Name.enableAutoSizing = true;
-            tile.Name.fontSizeMax = nameSize;
-            tile.Name.fontSizeMin = 20;
-            tile.Sub = AddText(textObj.transform, "Sub", "", 24, FontStyles.Normal, UiSkin.TextMuted);
-            tile.Sub.alignment = TextAlignmentOptions.Top;
-            tile.Sub.textWrappingMode = TextWrappingModes.NoWrap;
-            tile.Tag = AddText(textObj.transform, "Tag", "ON PROFILE", 22, FontStyles.Bold, UiSkin.Accent);
-            tile.Tag.alignment = TextAlignmentOptions.Top;
-            tile.Tag.textWrappingMode = TextWrappingModes.NoWrap;
+            var tagObj = new GameObject("Tag", typeof(RectTransform));
+            tagObj.transform.SetParent(obj.transform, false);
+            var tag = (RectTransform)tagObj.transform;
+            tag.anchorMin = tag.anchorMax = new Vector2(1f, 1f);
+            tag.pivot = new Vector2(1f, 0.5f);
+            tag.anchoredPosition = new Vector2(-16f, 0f);
+            tag.sizeDelta = new Vector2(128f, 30f);
+            var tagBg = tagObj.AddComponent<Image>();
+            tagBg.color = UiSkin.Accent;
+            tagBg.raycastTarget = false;
+            UiSprites.ApplyRounded(tagBg, 8f);
+            var tagText = AddText(tagObj.transform, "Text", "ON PROFILE", 16, FontStyles.Bold, TagTextColor);
+            Stretch(tagText.rectTransform);
+            tagText.alignment = TextAlignmentOptions.Center;
+            tagText.textWrappingMode = TextWrappingModes.NoWrap;
+            tagText.characterSpacing = 4f;
+            tile.Tag = tagObj;
             return tile;
         }
 
-        BadgeView BuildBadge(Transform parent, float size, float numberSize)
+        static Image AddBadge(Transform parent, Vector2 anchor, Vector2 position, float size)
         {
             var obj = new GameObject("Badge", typeof(RectTransform));
             obj.transform.SetParent(parent, false);
             var rt = (RectTransform)obj.transform;
+            rt.anchorMin = rt.anchorMax = rt.pivot = anchor;
+            rt.anchoredPosition = position;
             rt.sizeDelta = new Vector2(size, size);
-            var emblem = obj.AddComponent<Image>();
-            emblem.preserveAspect = true;
-            emblem.raycastTarget = false;
-
-            var number = AddText(obj.transform, "Number", "", numberSize,
-                _numberFont != null ? FontStyles.Normal : FontStyles.Bold, Color.white, _numberFont);
-            number.fontSharedMaterial = NumberMaterial(number.font);
-            number.characterSpacing = 6f; // so one digit's outline doesn't cut into the next
-            number.alignment = TextAlignmentOptions.Center;
-            number.textWrappingMode = TextWrappingModes.NoWrap;
-            number.enableAutoSizing = true;
-            number.fontSizeMax = numberSize;
-            number.fontSizeMin = numberSize * 0.55f;
-            var nrt = number.rectTransform;
-            nrt.anchorMin = nrt.anchorMax = new Vector2(0.5f, NumberCenter);
-            nrt.sizeDelta = new Vector2(size * 1.1f, numberSize * 1.3f);
-            return new BadgeView { Rect = rt, Emblem = emblem, Number = number };
+            var image = obj.AddComponent<Image>();
+            image.preserveAspect = true;
+            image.raycastTarget = false;
+            return image;
         }
 
-        /// <summary>One outlined material for every badge number (setting outlineWidth per text would make a material each).</summary>
-        Material NumberMaterial(TMP_FontAsset font)
+        /// <summary>One line of text across the face, inset left and right, top units down from its top edge.</summary>
+        TextMeshProUGUI AddLine(Transform parent, float left, float right, float top, float height, float size, Color color,
+            TextAlignmentOptions alignment, float minSize = 0f)
         {
-            if (_numberMaterial != null) return _numberMaterial;
-            _numberMaterial = new Material(font.material) { name = "BadgeNumber (outline)" };
-            _numberMaterial.EnableKeyword(ShaderUtilities.Keyword_Outline);
-            if (_numberFont != null)
+            var t = AddText(parent, "Text", "", size, FontStyles.Bold, color);
+            var rt = t.rectTransform;
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.offsetMin = new Vector2(left, -top - height);
+            rt.offsetMax = new Vector2(-right, -top);
+            t.alignment = alignment;
+            t.textWrappingMode = TextWrappingModes.NoWrap;
+            if (minSize > 0f)
             {
-                // About 7% of the type size of dark rim outside the glyphs, which also come out a little heavier than Bold.
-                _numberMaterial.SetFloat(ShaderUtilities.ID_FaceDilate, 0.47f);
-                _numberMaterial.SetFloat(ShaderUtilities.ID_OutlineWidth, 0.34f);
+                t.enableAutoSizing = true;
+                t.fontSizeMax = size;
+                t.fontSizeMin = minSize;
             }
-            else
-            {
-                _numberMaterial.SetFloat(ShaderUtilities.ID_OutlineWidth, 0.28f); // as much as the UI font's atlas allows
-            }
-            _numberMaterial.SetColor(ShaderUtilities.ID_OutlineColor, new Color32(10, 14, 24, 255));
-            ShaderUtilities.UpdateShaderRatios(_numberMaterial);
-            return _numberMaterial;
+            return t;
         }
 
-        /// <summary>The UI font rendered again with a wider margin around each glyph. The UI font's own atlas leaves room
-        /// for only a hairline outline at badge size. Null when the font file isn't in the build; the numbers then use
-        /// the UI font with a thinner outline.</summary>
-        static TMP_FontAsset CreateNumberFont(TMP_FontAsset uiFont)
+        /// <summary>Six small blocks, one per tier, filled in the badge's colour as tiers are earned.</summary>
+        static Image[] AddMeter(Transform parent, Vector2 anchor, Vector2 pivot, Vector2 position, float block, float gap)
         {
-            var file = uiFont != null ? uiFont.sourceFontFile : null;
-            if (file == null) return null;
-            var font = TMP_FontAsset.CreateFontAsset(file, NumberSamplingSize, NumberAtlasPadding, GlyphRenderMode.SDFAA, 512, 512);
-            if (font == null) return null;
-            font.name = uiFont.name + " (badge numbers)";
-            font.TryAddCharacters(NumberCharacters);
-            return font;
+            var obj = new GameObject("Tiers", typeof(RectTransform));
+            obj.transform.SetParent(parent, false);
+            var rt = (RectTransform)obj.transform;
+            rt.anchorMin = rt.anchorMax = anchor;
+            rt.pivot = pivot;
+            rt.anchoredPosition = position;
+            rt.sizeDelta = new Vector2(MeterWidth(block, gap), block);
+            var blocks = new Image[AchievementCatalog.Tiers];
+            for (int i = 0; i < blocks.Length; i++)
+            {
+                var b = new GameObject("Tier" + (i + 1), typeof(RectTransform));
+                b.transform.SetParent(obj.transform, false);
+                var brt = (RectTransform)b.transform;
+                brt.anchorMin = brt.anchorMax = brt.pivot = new Vector2(0f, 0.5f);
+                brt.anchoredPosition = new Vector2(i * (block + gap), 0f);
+                brt.sizeDelta = new Vector2(block, block);
+                blocks[i] = b.AddComponent<Image>();
+                blocks[i].sprite = UiSprites.Tile;
+                blocks[i].raycastTarget = false;
+            }
+            return blocks;
+        }
+
+        static float MeterWidth(float block, float gap) => AchievementCatalog.Tiers * block + (AchievementCatalog.Tiers - 1) * gap;
+
+        static void SetMeter(Image[] blocks, int tier, Color color)
+        {
+            for (int i = 0; i < blocks.Length; i++) blocks[i].color = i < tier ? color : EmptyBlock;
         }
 
         // ── Details ─────────────────────────────────────────────────────
@@ -433,7 +519,7 @@ namespace StackSurge.UI
             var holder = new GameObject("BadgeHolder", typeof(RectTransform));
             holder.transform.SetParent(panelObj.transform, false);
             SetFixedHeight(holder, DetailEmblemSize);
-            _detailBadge = BuildBadge(holder.transform, DetailEmblemSize, 64f);
+            _detailBadge = AddBadge(holder.transform, new Vector2(0.5f, 0.5f), Vector2.zero, DetailEmblemSize);
 
             _detailName = AddCentered(panelObj.transform, "Name", 44, FontStyles.Bold, Color.white);
             _detailTier = AddCentered(panelObj.transform, "Tier", 28, FontStyles.Bold, UiSkin.Accent);
@@ -455,10 +541,10 @@ namespace StackSurge.UI
             _detailBarFill.anchorMax = new Vector2(0f, 1f);
             _detailBarFill.pivot = new Vector2(0f, 0.5f);
             _detailBarFill.offsetMin = _detailBarFill.offsetMax = Vector2.zero;
-            var fill = fillObj.AddComponent<Image>();
-            fill.color = UiSkin.Teal;
-            fill.raycastTarget = false;
-            UiSprites.ApplyRounded(fill, BarHeight * 0.5f);
+            _detailBarFillImage = fillObj.AddComponent<Image>();
+            _detailBarFillImage.color = UiSkin.Teal;
+            _detailBarFillImage.raycastTarget = false;
+            UiSprites.ApplyRounded(_detailBarFillImage, BarHeight * 0.5f);
 
             _detailProgress = AddCentered(panelObj.transform, "Progress", 25, FontStyles.Normal, UiSkin.TextMuted);
             AddSpacer(panelObj.transform, 14f);
@@ -480,7 +566,8 @@ namespace StackSurge.UI
             _detailObj.SetActive(false);
         }
 
-        /// <summary>All six badges of the achievement in a row, each with the goal that earns it underneath.</summary>
+        /// <summary>All six badges of the achievement in a row, each with the goal that earns it underneath. These keep
+        /// the art's own size, so higher tiers stand bigger.</summary>
         void BuildTierStrip(Transform parent)
         {
             var strip = new GameObject("Tiers", typeof(RectTransform));
@@ -531,36 +618,43 @@ namespace StackSurge.UI
             if (p == null) return;
 
             _countText.text = $"{AchievementCatalog.EarnedBadges(p)} / {AchievementCatalog.TotalBadges} badges";
+            int records = 0, recordTiers = 0, awards = 0, awardTiers = 0;
             foreach (var tile in _tiles)
             {
                 var def = tile.Def;
                 int tier = AchievementCatalog.TierOf(p, def);
                 int value = def.Value(p);
-                bool onProfile = tier > 0 && p.ShownBadge == def.Key;
+                bool earned = tier > 0;
+                bool onProfile = earned && p.ShownBadge == def.Key;
+                if (def.IsRecord) { records += tier; recordTiers += AchievementCatalog.Tiers; }
+                else { awards += tier; awardTiers += AchievementCatalog.Tiers; }
 
-                tile.Background.color = onProfile ? ShownColor : def.IsRecord ? CardColor : Clear;
-                tile.Tag.gameObject.SetActive(onProfile);
+                tile.Badge.sprite = BadgeArt.Trimmed(def.Key, Mathf.Max(1, tier));
+                tile.Badge.color = earned ? Color.white : LockedTint;
+                SetMeter(tile.Meter, tier, BadgeArt.ColorOf(def.Key));
+                tile.Outline.SetActive(onProfile);
+                tile.Tag.SetActive(onProfile);
+
                 if (def.IsRecord)
                 {
-                    SetBadge(tile.Badge, def, tier, value > 0 ? N(value) : "");
-                    tile.Sub.text = value <= 0 ? "No record yet" : FormatDate(def.SetAtTicks(p)) ?? "All-time best";
+                    tile.Value.text = RecordText(def, value);
+                    tile.Date.text = value <= 0 ? "No record yet" : FormatDate(def.SetAtTicks(p)) ?? "All-time best";
+                    if (tile.Count != null) tile.Count.text = earned ? $"Tier {tier} of {AchievementCatalog.Tiers}" : "No badge yet";
                 }
                 else
                 {
-                    // Like the tier strip: the goal the badge was earned for, or the first goal on a badge still to earn.
-                    SetBadge(tile.Badge, def, tier, AchievementCatalog.Compact(def.Goals[Mathf.Max(1, tier) - 1]));
-                    tile.Sub.text = $"{tier} of {AchievementCatalog.Tiers}";
+                    tile.Name.color = earned ? Color.white : UiSkin.TextMuted;
+                    tile.Count.text = tier >= AchievementCatalog.Tiers ? "Every tier earned" : $"{N(value)} / {N(def.Goals[tier])}";
                 }
             }
+            _recordsCount.text = $"{records} / {recordTiers}";
+            _awardsCount.text = $"{awards} / {awardTiers}";
         }
 
-        static void SetBadge(BadgeView view, AchievementDef def, int tier, string number)
+        static string RecordText(AchievementDef def, int value)
         {
-            bool earned = tier > 0;
-            view.Emblem.sprite = BadgeArt.Emblem(def.Key, Mathf.Max(1, tier));
-            view.Emblem.color = earned ? Color.white : LockedTint;
-            view.Number.text = number;
-            view.Number.color = earned ? Color.white : LockedNumber;
+            if (def.Key == "streak") return value == 1 ? "1 day" : $"{N(Mathf.Max(0, value))} days";
+            return N(Mathf.Max(0, value));
         }
 
         void RefreshDetail()
@@ -574,9 +668,8 @@ namespace StackSurge.UI
             bool earned = tier > 0;
             bool allDone = tier >= AchievementCatalog.Tiers;
 
-            SetBadge(_detailBadge, def, tier, def.IsRecord
-                ? (value > 0 ? N(value) : "")
-                : AchievementCatalog.Compact(def.Goals[Mathf.Max(1, tier) - 1]));
+            _detailBadge.sprite = BadgeArt.Trimmed(def.Key, Mathf.Max(1, tier));
+            _detailBadge.color = earned ? Color.white : LockedTint;
             _detailName.text = def.Name;
             _detailTier.text = earned ? $"Tier {tier} of {AchievementCatalog.Tiers}" : "No badge yet";
             _detailTier.color = earned ? UiSkin.Accent : UiSkin.TextMuted;
@@ -594,6 +687,7 @@ namespace StackSurge.UI
                 float fill = Mathf.Clamp01(value / (float)goal);
                 _detailBarFill.anchorMax = new Vector2(fill, 1f);
                 _detailBarFill.gameObject.SetActive(fill > 0f);
+                _detailBarFillImage.color = BadgeArt.ColorOf(def.Key);
                 _detailProgress.text = $"{N(value)} / {N(goal)}";
             }
             else
@@ -627,8 +721,9 @@ namespace StackSurge.UI
 
         void OnTileTapped(Tile tile)
         {
-            tile.Badge.Rect.DOKill(true);
-            tile.Badge.Rect.DOPunchScale(Vector3.one * 0.08f, 0.25f, 8, 0.6f).SetUpdate(true);
+            var badge = tile.Badge.rectTransform;
+            badge.DOKill(true);
+            badge.DOPunchScale(Vector3.one * 0.08f, 0.25f, 8, 0.6f).SetUpdate(true);
             SfxPlayer.Play(Sfx.UiTap);
             Haptics.Light();
             OpenDetail(tile.Def);
@@ -716,23 +811,22 @@ namespace StackSurge.UI
             Closed?.Invoke();
         }
 
-        /// <summary>Fits the visible (safe-area) height and width; three badges to a row, the list scrolls inside.</summary>
+        /// <summary>Fits the visible (safe-area) height and width; three awards to a row, the list scrolls inside.</summary>
         void ResizeDialog()
         {
             Rect area = _overlayRect.rect;
             float maxWidth = area.width > 0f ? area.width - 2 * ScreenMargin : DialogWidth;
             float width = Mathf.Min(DialogWidth, maxWidth);
-            float cellWidth = Mathf.Floor((width - 2 * DialogPadding - (Columns - 1) * ColumnGap) / Columns);
-            _recordsGrid.cellSize = new Vector2(cellWidth, RecordCardHeight);
-            _awardsGrid.cellSize = new Vector2(cellWidth, AwardCellHeight);
+            float inner = width - 2 * DialogPadding - 2 * WellPadSide;
+            float cellWidth = Mathf.Floor((inner - (Columns - 1) * TileGap) / Columns);
+            _awardsGrid.cellSize = new Vector2(cellWidth, AwardHeight);
 
-            int records = _recordsGrid.transform.childCount, awards = _awardsGrid.transform.childCount;
-            float GridHeight(int count, float cell)
-            {
-                int rows = (count + Columns - 1) / Columns;
-                return rows * cell + Mathf.Max(0, rows - 1) * AwardRowGap;
-            }
-            float list = 2 * SectionTitleHeight + GridHeight(records, RecordCardHeight) + GridHeight(awards, AwardCellHeight) + 3 * ListSpacing;
+            int awards = _awardsGrid.transform.childCount;
+            int rows = (awards + Columns - 1) / Columns;
+            float well = WellPadTop + WellHeaderHeight + WellSpacing + WellPadBottom;
+            float recordsWell = well + HeroHeight + WellSpacing + HalfHeight;
+            float awardsWell = well + rows * AwardHeight + Mathf.Max(0, rows - 1) * TileGap;
+            float list = recordsWell + ListSpacing + awardsWell;
 
             float safeFraction = Screen.height > 0 ? Mathf.Clamp01(Screen.safeArea.height / Screen.height) : 1f;
             float desired = 2 * DialogPadding + HeaderHeight + HintHeight + list + CloseButtonHeight + 3 * SectionSpacing;
@@ -741,13 +835,12 @@ namespace StackSurge.UI
         }
 
         // ── Helpers ─────────────────────────────────────────────────────
-        TextMeshProUGUI AddText(Transform parent, string name, string text, float size, FontStyles style, Color color, TMP_FontAsset font = null)
+        TextMeshProUGUI AddText(Transform parent, string name, string text, float size, FontStyles style, Color color)
         {
             var obj = new GameObject(name, typeof(RectTransform));
             obj.transform.SetParent(parent, false);
             var t = obj.AddComponent<TextMeshProUGUI>();
-            if (font == null) font = _font;
-            if (font != null) t.font = font;
+            if (_font != null) t.font = _font;
             t.text = text;
             t.fontSize = size;
             t.fontStyle = style;
@@ -790,6 +883,15 @@ namespace StackSurge.UI
             text.fontSizeMax = 34;
             text.fontSizeMin = 22;
             return button;
+        }
+
+        static RectTransform AddStretched(Transform parent, string name)
+        {
+            var obj = new GameObject(name, typeof(RectTransform));
+            obj.transform.SetParent(parent, false);
+            var rt = (RectTransform)obj.transform;
+            Stretch(rt);
+            return rt;
         }
 
         static void Stretch(RectTransform rt)

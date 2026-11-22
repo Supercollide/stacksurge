@@ -477,34 +477,36 @@ namespace StackSurge.UI
                     onBlock: async (playerId) => await BlockUserAsync(playerId),
                     delayIndex: i
                 );
+                row.ReserveEmblem();
                 shown.Add((row, friends[i].PlayerId));
             }
             _ = ApplyBadgesAsync(shown, generation);
         }
 
-        /// <summary>Fills in each player's chosen badge once their public preferences arrive (the rows don't wait).</summary>
+        /// <summary>
+        /// Fills in each player's emblem once their public preferences arrive (the rows don't wait): the badge they chose,
+        /// or their block. When the preferences can't be loaded, everyone shows their block.
+        /// </summary>
         private async Task ApplyBadgesAsync(List<(FriendsRowView row, string playerId)> rows, int generation)
         {
-            if (_friendsService == null || rows.Count == 0) return;
+            if (rows.Count == 0) return;
             var ids = new List<string>();
             foreach (var (_, id) in rows) if (!string.IsNullOrEmpty(id)) ids.Add(id);
-            if (ids.Count == 0) return;
 
-            Dictionary<string, SocialPrefs> prefs;
-            try { prefs = await _friendsService.GetSocialPrefsBatchAsync(ids); }
-            catch (Exception e)
+            Dictionary<string, SocialPrefs> prefs = null;
+            if (_friendsService != null && ids.Count > 0)
             {
-                Debug.LogWarning("[FriendsManagerUI] Loading badges failed: " + e.Message);
-                return;
+                try { prefs = await _friendsService.GetSocialPrefsBatchAsync(ids); }
+                catch (Exception e) { Debug.LogWarning("[FriendsManagerUI] Loading badges failed: " + e.Message); }
             }
-            if (generation != _refreshGeneration || prefs == null) return;
+            if (generation != _refreshGeneration) return;
 
-            Sprite BadgeOf(string id) =>
-                !string.IsNullOrEmpty(id) && prefs.TryGetValue(id, out var p) && p != null ? BadgeArt.ForBadge(p.badge) : null;
-            bool any = false;
-            foreach (var (_, id) in rows) any |= BadgeOf(id) != null;
             foreach (var (row, id) in rows)
-                if (row != null) row.SetBadge(BadgeOf(id), any);
+            {
+                if (row == null) continue;
+                string badge = prefs != null && !string.IsNullOrEmpty(id) && prefs.TryGetValue(id, out var p) && p != null ? p.badge : "";
+                row.SetEmblem(badge, id);
+            }
         }
 
         private async Task LoadPendingRequestsAsync(int generation)
@@ -557,6 +559,7 @@ namespace StackSurge.UI
                     onBlock: async (playerId) => await BlockUserAsync(playerId),
                     delayIndex: i
                 );
+                row.ReserveEmblem();
                 shown.Add((row, allRequests[i].PlayerId));
             }
             _ = ApplyBadgesAsync(shown, generation);

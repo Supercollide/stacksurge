@@ -217,39 +217,40 @@ namespace StackSurge.UI
             AnimateIn(delayIndex);
         }
 
-        private const float BadgeSize = 48f; // the row's inner height (64 minus its padding)
-        private Image _badge;
+        // Rows with an emblem are a little taller than the prefab's 64, so the emblem reads at a glance.
+        private const float EmblemRowHeight = 72f;
+        private const int EmblemRowPadding = 6;
+        private const float EmblemSize = EmblemRowHeight - 2 * EmblemRowPadding;
+        private PlayerEmblem _emblem;
 
-        /// <summary>
-        /// Shows the badge the player chose, after the status bar. With no badge and reserveSlot, the space stays empty
-        /// so names line up with rows that have one.
-        /// </summary>
-        public void SetBadge(Sprite sprite, bool reserveSlot)
+        /// <summary>Makes room for the player's emblem after the status bar, empty until <see cref="SetEmblem"/>.</summary>
+        public void ReserveEmblem()
         {
-            if (sprite == null && !reserveSlot)
-            {
-                if (_badge != null) _badge.gameObject.SetActive(false);
-                return;
-            }
+            EnsureEmblem();
+            _emblem.Clear();
+        }
 
-            if (_badge == null)
-            {
-                var go = new GameObject("Badge", typeof(RectTransform));
-                go.transform.SetParent(transform, false);
-                bool dotHere = _statusIndicatorImage != null && _statusIndicatorImage.transform.parent == transform;
-                go.transform.SetSiblingIndex(dotHere ? _statusIndicatorImage.transform.GetSiblingIndex() + 1 : 0);
-                var layout = go.AddComponent<LayoutElement>();
-                layout.minWidth = layout.preferredWidth = BadgeSize;
-                layout.minHeight = layout.preferredHeight = BadgeSize;
-                layout.flexibleWidth = 0;
-                _badge = go.AddComponent<Image>();
-                _badge.preserveAspect = true;
-                _badge.raycastTarget = false;
-            }
+        /// <summary>Shows the badge the player chose ("chain:3"), or their block when they show none.</summary>
+        public void SetEmblem(string badge, string playerId)
+        {
+            EnsureEmblem();
+            _emblem.Set(badge, playerId);
+        }
 
-            _badge.sprite = sprite;
-            _badge.color = sprite != null ? Color.white : Color.clear;
-            _badge.gameObject.SetActive(true);
+        private void EnsureEmblem()
+        {
+            if (_emblem != null) return;
+            if (TryGetComponent(out LayoutElement row)) row.minHeight = row.preferredHeight = EmblemRowHeight;
+            if (TryGetComponent(out HorizontalLayoutGroup layout))
+                layout.padding = new RectOffset(layout.padding.left, layout.padding.right, EmblemRowPadding, EmblemRowPadding);
+
+            _emblem = PlayerEmblem.Create(transform, EmblemSize);
+            bool dotHere = _statusIndicatorImage != null && _statusIndicatorImage.transform.parent == transform;
+            _emblem.transform.SetSiblingIndex(dotHere ? _statusIndicatorImage.transform.GetSiblingIndex() + 1 : 0);
+            var element = _emblem.gameObject.AddComponent<LayoutElement>();
+            element.minWidth = element.preferredWidth = EmblemSize;
+            element.minHeight = element.preferredHeight = EmblemSize;
+            element.flexibleWidth = 0;
         }
 
         private static void SetButtonText(Button btn, string label)

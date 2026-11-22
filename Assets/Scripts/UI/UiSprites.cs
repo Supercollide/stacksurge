@@ -30,6 +30,7 @@ namespace StackSurge.UI
         static Sprite _circle;
         static Sprite _fadeDown;
         static Sprite _ring;
+        static Sprite _bolt;
         static readonly Sprite[] _glyphs = new Sprite[5];
 
         /// <summary>White rounded rectangle, 9-sliced. Use <see cref="ApplyRounded"/> to pick the corner radius.</summary>
@@ -52,6 +53,9 @@ namespace StackSurge.UI
 
         /// <summary>White anti-aliased ring (shockwaves).</summary>
         public static Sprite Ring => _ring != null ? _ring : (_ring = BuildRing());
+
+        /// <summary>White lightning bolt like the one in the logo (the profile card's tier-up).</summary>
+        public static Sprite Bolt => _bolt != null ? _bolt : (_bolt = BuildBolt());
 
         /// <summary>White anti-aliased disc.</summary>
         public static Sprite Circle => _circle != null ? _circle : (_circle = BuildGlyph(GlyphShape.Circle, 0.48f));
@@ -231,6 +235,44 @@ namespace StackSurge.UI
             tex.SetPixels32(pixels);
             tex.Apply(false, true);
             return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect);
+        }
+
+        // The bolt's outline in a 0..1 box, y up: top-right stroke down to the lower point, back up the right side.
+        static readonly Vector2[] BoltShape =
+        {
+            new Vector2(0.66f, 1f), new Vector2(0.18f, 0.42f), new Vector2(0.46f, 0.42f), new Vector2(0.30f, 0f),
+            new Vector2(0.84f, 0.62f), new Vector2(0.55f, 0.62f), new Vector2(0.80f, 1f)
+        };
+
+        static Sprite BuildBolt()
+        {
+            const int w = 96, h = 144;
+            var tex = NewTexture(w, h, "UiBolt");
+            var pixels = new Color32[w * h];
+            var poly = new Vector2[BoltShape.Length];
+            for (int i = 0; i < poly.Length; i++) poly[i] = new Vector2(BoltShape[i].x * w, BoltShape[i].y * h);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    pixels[y * w + x] = new Color32(255, 255, 255, Coverage(PolygonDistance(new Vector2(x + 0.5f, y + 0.5f), poly)));
+            tex.SetPixels32(pixels);
+            tex.Apply(false, true);
+            return Sprite.Create(tex, new Rect(0, 0, w, h), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect);
+        }
+
+        /// <summary>Signed distance to a closed polygon, negative inside (after Inigo Quilez).</summary>
+        static float PolygonDistance(Vector2 p, Vector2[] v)
+        {
+            float d = Vector2.Dot(p - v[0], p - v[0]);
+            float sign = 1f;
+            for (int i = 0, j = v.Length - 1; i < v.Length; j = i, i++)
+            {
+                Vector2 e = v[j] - v[i], w = p - v[i];
+                Vector2 b = w - e * Mathf.Clamp01(Vector2.Dot(w, e) / Vector2.Dot(e, e));
+                d = Mathf.Min(d, Vector2.Dot(b, b));
+                bool c1 = p.y >= v[i].y, c2 = p.y < v[j].y, c3 = e.x * w.y > e.y * w.x;
+                if ((c1 && c2 && c3) || (!c1 && !c2 && !c3)) sign = -sign;
+            }
+            return sign * Mathf.Sqrt(d);
         }
 
         static Sprite BuildFadeDown()

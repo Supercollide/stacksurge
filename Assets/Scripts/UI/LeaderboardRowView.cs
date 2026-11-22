@@ -44,10 +44,10 @@ namespace StackSurge.UI
         private const float ButtonFontSize = 20f;
         private const float GapAfterScore = 16f;
         private const float GapAfterName = 12f;
-        private const float BadgeSize = 50f;  // the row is 66 tall
-        private const float BadgeGap = 10f;
+        private const float EmblemSize = 56f;  // the row is 66 tall
+        private const float EmblemGap = 10f;
 
-        private Image _badge;
+        private PlayerEmblem _emblem;
         private string _badgeValue = "";
         private string _playerName = "";
         private float _nameLeft = float.NaN; // the prefab's left edge for the name, before a badge moves it
@@ -105,11 +105,10 @@ namespace StackSurge.UI
         }
 
         /// <summary>
-        /// Shows the badge the player chose ("chain:3") between the rank and the name; "" or an unknown value shows none.
-        /// With reserveSlot the name starts after the badge's space even without a badge, so names in a list that has
-        /// badges line up. Tapping the badge calls onTapped with the badge and the player's name.
+        /// Shows the badge the player chose ("chain:3") between the rank and the name, or the player's block when they
+        /// show none (see <see cref="PlayerEmblem"/>). Tapping a badge calls onTapped with the badge and the player's name.
         /// </summary>
-        public void SetBadge(string badge, Action<string, string> onTapped, bool reserveSlot)
+        public void SetBadge(string badge, Action<string, string> onTapped)
         {
             _onBadgeTapped = onTapped;
             _badgeValue = badge ?? "";
@@ -117,34 +116,26 @@ namespace StackSurge.UI
 
             var name = _nameText.rectTransform;
             if (float.IsNaN(_nameLeft)) _nameLeft = name.offsetMin.x;
-            Sprite sprite = BadgeArt.ForBadge(_badgeValue);
-
-            if (sprite == null)
+            if (_emblem == null)
             {
-                if (_badge != null) _badge.gameObject.SetActive(false);
-                name.offsetMin = new Vector2(_nameLeft + (reserveSlot ? BadgeSize + BadgeGap : 0f), name.offsetMin.y);
-                return;
-            }
-
-            if (_badge == null)
-            {
-                var go = new GameObject("Badge", typeof(RectTransform));
-                go.transform.SetParent(transform, false);
-                var rt = (RectTransform)go.transform;
+                _emblem = PlayerEmblem.Create(transform, EmblemSize);
+                var rt = (RectTransform)_emblem.transform;
                 rt.anchorMin = rt.anchorMax = new Vector2(0f, 0.5f);
                 rt.pivot = new Vector2(0f, 0.5f);
                 rt.anchoredPosition = new Vector2(_nameLeft, 0f);
-                rt.sizeDelta = new Vector2(BadgeSize, BadgeSize);
-                _badge = go.AddComponent<Image>();
-                _badge.preserveAspect = true;
-                var button = go.AddComponent<Button>();
+                var hit = _emblem.gameObject.AddComponent<Image>(); // clear, so the whole square takes the tap
+                hit.sprite = UiSprites.Circle;
+                hit.color = Color.clear;
+                var button = _emblem.gameObject.AddComponent<Button>();
                 button.transition = Selectable.Transition.None;
-                button.onClick.AddListener(() => _onBadgeTapped?.Invoke(_badgeValue, _playerName));
+                button.onClick.AddListener(() =>
+                {
+                    if (_emblem.HasBadge) _onBadgeTapped?.Invoke(_badgeValue, _playerName);
+                });
             }
 
-            _badge.sprite = sprite;
-            _badge.gameObject.SetActive(true);
-            name.offsetMin = new Vector2(_nameLeft + BadgeSize + BadgeGap, name.offsetMin.y);
+            _emblem.Set(_badgeValue, _playerId);
+            name.offsetMin = new Vector2(_nameLeft + EmblemSize + EmblemGap, name.offsetMin.y);
         }
 
         /// <summary>Applies a relationship that changed after the row was shown (friend list refreshed late).</summary>

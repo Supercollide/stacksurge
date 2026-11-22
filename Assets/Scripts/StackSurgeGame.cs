@@ -410,6 +410,10 @@ namespace StackSurge
             _achievementsUI.Initialize(_achievements, _view.UiFont);
             _view.OnAchievementsTriggered = OpenAchievements;
             _view.GetProfileBadge = () => AchievementCatalog.PublicBadge(_save.Achievements);
+            _view.GetProfilePlayerId = OwnPlayerId;
+            _view.GetAutoPlayerName = AutoPlayerName;
+            _view.IsMenuCovered = () => _achievementsUI != null && _achievementsUI.IsOpen;
+            _achievementsUI.Closed += _view.PlayProfileChanges; // a badge picked in there repaints the card once it closes
 
             // Best score and streak from before achievements existed can already earn badges; the toast waits for the menu.
             AnnounceBadges(_achievements.CheckNewTiers());
@@ -421,6 +425,57 @@ namespace StackSurge
             await _achievements.SyncAsync(); // a reinstall gets its badges back here
             if (this == null) return;
             AnnounceBadges(_achievements.CloudMergeEarned);
+            _view.RefreshMainMenuStats();
+        }
+
+        const string LastPlayerIdKey = "last_player_id";
+
+        /// <summary>
+        /// This player's ID (it picks their block on the profile card when no badge is on show). Remembered, so the card
+        /// shows the same block before sign-in finishes or offline; "" before the first sign-in.
+        /// </summary>
+        string OwnPlayerId()
+        {
+            string id = null;
+            try
+            {
+                if (AuthenticationService.Instance.IsSignedIn) id = AuthenticationService.Instance.PlayerId;
+            }
+            catch (Exception) { } // Unity Services not initialised (offline start)
+            if (string.IsNullOrEmpty(id)) return PlayerPrefs.GetString(LastPlayerIdKey, "");
+            if (PlayerPrefs.GetString(LastPlayerIdKey, "") != id) PlayerPrefs.SetString(LastPlayerIdKey, id);
+            return id;
+        }
+
+        const string AutoNameKey = "auto_player_name", AutoNameIdKey = "auto_player_name_id";
+
+        /// <summary>The name Unity gave this player (without its "#1234"), for the profile card until they pick one; "" if not fetched yet.</summary>
+        string AutoPlayerName()
+        {
+            string id = OwnPlayerId();
+            return !string.IsNullOrEmpty(id) && PlayerPrefs.GetString(AutoNameIdKey, "") == id ? PlayerPrefs.GetString(AutoNameKey, "") : "";
+        }
+
+        /// <summary>
+        /// Fetches the generated name for a player who hasn't picked one (Unity makes one the first time it's asked, as the
+        /// leaderboard does on a first score) and remembers it, so the card shows it offline too.
+        /// </summary>
+        async Task LoadAutoPlayerNameAsync()
+        {
+            if (!_provider.IsOnline || !string.IsNullOrEmpty(_save.PlayerDisplayName) || !string.IsNullOrEmpty(AutoPlayerName())) return;
+            string id = OwnPlayerId();
+            if (string.IsNullOrEmpty(id)) return;
+            string name;
+            try { name = await AuthenticationService.Instance.GetPlayerNameAsync(autoGenerate: true); }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[StackSurgeGame] Couldn't read the generated name: " + e.Message);
+                return;
+            }
+            if (this == null || string.IsNullOrEmpty(name)) return;
+            int hash = name.LastIndexOf('#');
+            PlayerPrefs.SetString(AutoNameKey, hash > 0 ? name.Substring(0, hash) : name);
+            PlayerPrefs.SetString(AutoNameIdKey, id);
             _view.RefreshMainMenuStats();
         }
 
@@ -445,7 +500,7 @@ namespace StackSurge
         {
             if (earned == null || earned.Count == 0) return;
             var (def, tier) = earned[0];
-            Sprite icon = BadgeArt.Emblem(def.Key, tier);
+            Sprite icon = BadgeArt.Trimmed(def.Key, tier);
 
             if (earned.Count == 1)
             {
@@ -474,7 +529,7 @@ namespace StackSurge
             if (!AchievementCatalog.TryParseBadge(badge, out var def, out int tier)) return;
             string who = string.IsNullOrEmpty(playerName) ? "This player" : playerName;
             InAppNotificationView.Show($"{def.Name}, tier {tier} of {AchievementCatalog.Tiers}",
-                $"{who} earned it for {def.GoalText(tier)}.", NotificationType.Info, null, BadgeArt.Emblem(def.Key, tier));
+                $"{who} earned it for {def.GoalText(tier)}.", NotificationType.Info, null, BadgeArt.Trimmed(def.Key, tier));
         }
 
         /// <summary>
@@ -536,7 +591,9 @@ namespace StackSurge
         {
             AnalyticsConsent.Apply(_save); // only when the player agreed; a no-op otherwise
             _ = RestorePlayerNameAsync(force: false); // a reconnect can sign in with Play Games on a new install
+            _ = LoadAutoPlayerNameAsync();
             NotificationService.Instance?.BindSignedInPlayer();
+            _view.RefreshMainMenuStats(); // the player ID is known now, which picks their block when no badge is on show
             if (_leaderboardManager != null)
             {
                 if (_leaderboardManager.IsOpen) _ = _leaderboardManager.RefreshLeaderboard();
@@ -1268,7 +1325,7 @@ namespace StackSurge
         {
             _playing = false;
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
-            _view.ShowMainMenu(false);
+            _view.ShowMainMenu(false, profileEntrance: true);
             if (_analyticsConsentUI != null) _analyticsConsentUI.ShowIfNeeded();
 
             // A push or reminder tap that launched the app; wait if the consent prompt is up.
@@ -1282,7 +1339,7 @@ namespace StackSurge
             _view.HideGameOver();
             _view.SetInstructionalTextActive(false);
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
-            _view.ShowMainMenu(true);
+            _view.ShowMainMenu(true, profileEntrance: true);
             RefreshChallenges();
 
             // Back on the menu after a run: open anything tapped meanwhile, otherwise this is the moment for the

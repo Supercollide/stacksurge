@@ -50,7 +50,7 @@ namespace StackSurge.UI
         const float PanelWidth = 880f;
         const float ScreenMargin = 40f;
         const float ButtonHeight = 92f;
-        const float BadgeSize = 112f;
+        const float BadgeSize = 88f; // the art cut to its own bounds, so it fills this
 
         public bool IsOpen { get; private set; }
         public event Action Closed;
@@ -274,7 +274,7 @@ namespace StackSurge.UI
 
         static void FillCard(Card card, PlayGamesAccount.PlayerSummary player)
         {
-            var sprite = BadgeArt.ForBadge(player.Badge);
+            var sprite = BadgeArt.TrimmedForBadge(player.Badge);
             card.Badge.sprite = sprite;
             card.Badge.gameObject.SetActive(sprite != null);
             card.Name.text = string.IsNullOrEmpty(player.Name) ? "Unnamed player" : player.Name;

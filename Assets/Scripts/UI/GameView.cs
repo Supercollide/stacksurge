@@ -129,12 +129,19 @@ namespace StackSurge.UI
         public Action OnAchievementsTriggered;
         /// <summary>The badge on the player's profile ("chain:3", or "" for none). Set by the game.</summary>
         public Func<string> GetProfileBadge;
+        /// <summary>This player's ID, which picks their block when no badge is on show ("" when not known yet). Set by the game.</summary>
+        public Func<string> GetProfilePlayerId;
+        /// <summary>True while a screen covers the menu (changes to the profile card wait until it closes). Set by the game.</summary>
+        public Func<bool> IsMenuCovered;
+        /// <summary>The name Unity gave the player ("" when not known), shown on the card until they pick their own. Set by the game.</summary>
+        public Func<string> GetAutoPlayerName;
 
         /// <summary>The font the scene's UI is set in (Montserrat Bold), for screens built in code.</summary>
         public TMP_FontAsset UiFont => _hudText != null && _hudText.font != null ? _hudText.font : TMP_Settings.defaultFontAsset;
 
         Button _mainMenuAchievementsButton;
-        Image _profileBadge;
+        ProfileCardView _profileCard;
+        bool _holdProfileMotion;
 
         /// <summary>Redraws the Challenges screen if it's open (after the day's set or a challenge changed).</summary>
         public void RefreshChallengesIfOpen()
@@ -350,7 +357,7 @@ namespace StackSurge.UI
 
             // Start hidden – shown after the loading screen completes
             _mainMenuRoot.SetActive(false);
-            FitStatsCard();
+            BuildProfileCard();
 
             // Ensure a CanvasGroup exists for fade animations
             if (_mainMenuRoot.GetComponent<CanvasGroup>() == null)
@@ -398,7 +405,6 @@ namespace StackSurge.UI
             else Debug.LogWarning("[GameView] _mainMenuHowToPlayButton not assigned.");
 
             BuildAchievementsButton();
-            BuildProfileBadge();
 
             // PROGRAMMATIC MAIN MENU BUTTONS (NOTIFICATIONS & HOW TO PLAY FALLBACK)
             if (_mainMenuRoot != null)
@@ -543,38 +549,117 @@ namespace StackSurge.UI
             if (label != null) label.text = "ACHIEVEMENTS";
         }
 
-        const float ProfileBadgeSize = 84f;
-
-        /// <summary>The badge the player shows, in the profile card's top-right corner. Tapping it opens Achievements.</summary>
-        void BuildProfileBadge()
+        /// <summary>Lays the profile card out as a player card (see <see cref="ProfileCardView"/>). Tapping the badge opens Achievements.</summary>
+        void BuildProfileCard()
         {
-            var card = _mainMenuRoot.transform.Find("StatsCard");
-            if (card == null) return;
-
-            var go = new GameObject("ProfileBadge", typeof(RectTransform));
-            go.transform.SetParent(card, false);
-            var rt = (RectTransform)go.transform;
-            rt.anchorMin = rt.anchorMax = rt.pivot = Vector2.one;
-            rt.anchoredPosition = new Vector2(-18f, -12f);
-            rt.sizeDelta = new Vector2(ProfileBadgeSize, ProfileBadgeSize);
-            _profileBadge = go.AddComponent<Image>();
-            _profileBadge.preserveAspect = true;
-            var button = go.AddComponent<Button>();
-            button.transition = Selectable.Transition.None;
-            button.onClick.AddListener(() => OnAchievementsTriggered?.Invoke());
-            go.SetActive(false);
+            if (!(_mainMenuRoot.transform.Find("StatsCard") is RectTransform card)) return;
+            _profileCard = ProfileCardView.Build(card, UiFont, _mainMenuPlayerNameText, _mainMenuAllTimeHighText,
+                _mainMenuDailyBestText, _mainMenuStreakText, _mainMenuNameInput, _mainMenuSaveNameButton,
+                () => OnAchievementsTriggered?.Invoke());
         }
 
+        /// <summary>Gives the profile card the current badge (or block). A change plays at once only while the menu is in view.</summary>
         void RefreshProfileBadge()
         {
-            if (_profileBadge == null) return;
-            string badge = "";
-            try { badge = GetProfileBadge?.Invoke() ?? ""; }
+            if (_profileCard == null) return;
+            string badge = "", playerId = "";
+            try
+            {
+                badge = GetProfileBadge?.Invoke() ?? "";
+                playerId = GetProfilePlayerId?.Invoke() ?? "";
+            }
             catch (Exception e) { Debug.LogWarning("[GameView] Reading the profile badge failed: " + e.Message); }
-            Sprite sprite = BadgeArt.ForBadge(badge);
-            _profileBadge.sprite = sprite;
-            _profileBadge.gameObject.SetActive(sprite != null);
+
+            bool inView = !_holdProfileMotion && _mainMenuRoot.activeInHierarchy
+                && (!_mainMenuRoot.TryGetComponent(out CanvasGroup group) || group.blocksRaycasts)
+                && !(IsMenuCovered?.Invoke() ?? false);
+            _profileCard.SetLook(badge, playerId, inView);
         }
+
+        // ── Short screens ───────────────────────────────────────────────
+        const float LogoGap = 24f;             // between the logo and the profile card
+        const float LogoTopMargin = 40f;       // below the safe area's top edge, once the logo has to move
+        const float LogoMinSize = 160f;
+        const float MenuBottomMargin = 40f;    // under the last button, above the safe area's bottom edge
+        const float MenuStepTightest = 126f;   // the buttons sit 150 apart, and close up to this on the shortest screens
+
+        RectTransform _menuLogo, _menuCard;
+        readonly List<RectTransform> _menuStack = new List<RectTransform>(); // PLAY GAME and the buttons under it, top down
+        readonly List<float> _menuStackY = new List<float>();
+        Vector2 _menuLogoSize, _menuLogoPosition;
+        float _menuCardY;
+        bool _menuMeasured;
+
+        /// <summary>
+        /// The logo is pinned to the top of the screen; the profile card and the buttons to the middle. Phones have the
+        /// height for that. On shorter screens (tablets, 3:4 iPads) they would overlap, so the card and the buttons move
+        /// down into the space under the last button, the buttons close up (down to <see cref="MenuStepTightest"/>
+        /// apart) when that space isn't enough, and as a last resort the logo shrinks into what's left above the card.
+        /// </summary>
+        void FitMenuToScreen()
+        {
+            var root = (RectTransform)_mainMenuRoot.transform;
+            if (!_menuMeasured) MeasureMenu(root);
+            if (_menuLogo == null || _menuCard == null || _menuStack.Count == 0) return;
+            float height = root.rect.height;
+            if (height <= 0f || Screen.height <= 0) return;
+
+            float half = height * 0.5f;
+            float safeTop = (Screen.height - Screen.safeArea.yMax) / Screen.height * height;
+            float safeBottom = Screen.safeArea.yMin / Screen.height * height;
+            float cardTop = half - _menuCardY - _menuCard.rect.height;  // from the screen's top edge (pivot at its bottom)
+            float logoBottom = -_menuLogoPosition.y + _menuLogoSize.y * 0.5f;
+            float shortfall = Mathf.Max(0f, logoBottom + LogoGap - cardTop);
+
+            int gaps = _menuStack.Count - 1;
+            var last = _menuStack[gaps];
+            float lastBottom = -_menuStackY[gaps] + last.rect.height * 0.5f; // below the middle
+            float room = half - safeBottom - MenuBottomMargin - lastBottom;
+            float close = shortfall > 0f && gaps > 0 ? Mathf.Clamp((shortfall - room) / gaps, 0f, MenuButtonStep - MenuStepTightest) : 0f;
+            float shift = Mathf.Clamp(Mathf.Min(shortfall, room + close * gaps), 0f, shortfall);
+
+            _menuCard.anchoredPosition = new Vector2(_menuCard.anchoredPosition.x, _menuCardY - shift);
+            for (int i = 0; i < _menuStack.Count; i++)
+                _menuStack[i].anchoredPosition = new Vector2(_menuStack[i].anchoredPosition.x, _menuStackY[i] + close * i - shift);
+
+            float roomForLogo = cardTop + shift - LogoGap;
+            if (logoBottom <= roomForLogo)
+            {
+                _menuLogo.sizeDelta = _menuLogoSize;
+                _menuLogo.anchoredPosition = _menuLogoPosition;
+                return;
+            }
+            float top = safeTop + LogoTopMargin;
+            float size = Mathf.Clamp(roomForLogo - top, LogoMinSize, _menuLogoSize.y);
+            _menuLogo.sizeDelta = _menuLogoSize * (size / _menuLogoSize.y);
+            _menuLogo.anchoredPosition = new Vector2(_menuLogoPosition.x, -(top + size * 0.5f));
+        }
+
+        /// <summary>Remembers where the prefab (and the ACHIEVEMENTS button added in code) put the logo, card and buttons.</summary>
+        void MeasureMenu(RectTransform root)
+        {
+            _menuMeasured = true;
+            _menuLogo = root.Find("StackSurgeLogo") as RectTransform;
+            _menuCard = root.Find("StatsCard") as RectTransform;
+            if (_menuLogo == null || _menuCard == null) return;
+            _menuLogoSize = _menuLogo.sizeDelta;
+            _menuLogoPosition = _menuLogo.anchoredPosition;
+            _menuCardY = _menuCard.anchoredPosition.y;
+
+            var centre = new Vector2(0.5f, 0.5f);
+            foreach (Transform child in root)
+            {
+                var rt = (RectTransform)child;
+                if (!child.gameObject.activeSelf || !child.TryGetComponent(out Button _)) continue;
+                if (rt.anchorMin != centre || rt.anchorMax != centre || rt.anchoredPosition.y > 1f) continue;
+                _menuStack.Add(rt);
+            }
+            _menuStack.Sort((a, b) => b.anchoredPosition.y.CompareTo(a.anchoredPosition.y));
+            foreach (var rt in _menuStack) _menuStackY.Add(rt.anchoredPosition.y);
+        }
+
+        /// <summary>Plays a profile card change that waited for a screen over the menu to close.</summary>
+        public void PlayProfileChanges() => _profileCard?.PlayChanges();
 
         /// <summary>
         /// Call with <c>true</c> when the interactive tutorial starts and <c>false</c> when it ends.
@@ -834,7 +919,8 @@ namespace StackSurge.UI
         public void Retry() => _onRetry?.Invoke();
         public void GoToMainMenu() => _onMainMenu?.Invoke();
 
-        public void ShowMainMenu(bool animate = true)
+        /// <param name="profileEntrance">The menu opens after launch or a run: the profile card plays its entrance.</param>
+        public void ShowMainMenu(bool animate = true, bool profileEntrance = false)
         {
             ClearTransientUi();
             HideConfirmDialog();
@@ -847,7 +933,12 @@ namespace StackSurge.UI
             if (_mainMenuRoot != null)
             {
                 _mainMenuRoot.SetActive(true);
+                FitMenuToScreen();
+                _holdProfileMotion = true;
                 RefreshMainMenuStats();
+                _holdProfileMotion = false;
+                if (profileEntrance) _profileCard?.PlayEntrance();
+                else _profileCard?.PlayChanges();
 
                 var cg = _mainMenuRoot.GetComponent<CanvasGroup>();
                 if (cg != null)
@@ -916,7 +1007,13 @@ namespace StackSurge.UI
 
             if (_mainMenuPlayerNameText != null)
             {
-                _mainMenuPlayerNameText.text = save.PlayerDisplayName ?? "";
+                string name = save.PlayerDisplayName;
+                if (string.IsNullOrEmpty(name))
+                {
+                    try { name = GetAutoPlayerName?.Invoke(); }
+                    catch (Exception e) { Debug.LogWarning("[GameView] Reading the generated name failed: " + e.Message); }
+                }
+                _mainMenuPlayerNameText.text = name ?? "";
             }
 
             RefreshProfileBadge();
@@ -1022,79 +1119,6 @@ namespace StackSurge.UI
                 view.RewardText.fontSize = 22f;
                 var reward = view.RewardText.rectTransform;
                 reward.sizeDelta = new Vector2(reward.sizeDelta.x, 30f);
-            }
-        }
-
-        /// <summary>The profile card's stat captions and scores have boxes too short for readable text; give them room.</summary>
-        void FitStatsCard()
-        {
-            var card = _mainMenuRoot != null ? _mainMenuRoot.transform.Find("StatsCard") : null;
-            if (card == null) return;
-            foreach (string box in new[] { "HighScores/AllTime", "HighScores/DailyBest" })
-                CentreStatBox(card.Find(box) as RectTransform);
-            // "STREAK:" and its badge sit edge to edge in the prefab (layout spacing 0); give them a gap.
-            if (card.Find("Streak") is Transform streak && streak.TryGetComponent(out HorizontalLayoutGroup streakRow))
-                streakRow.spacing = 14f;
-        }
-
-        const float StatCaptionSize = 22f, StatCaptionHeight = 28f; // a line box is 1.22 em, so 28 holds 22pt
-        const float StatScoreSize = 30f, StatScoreHeight = 38f;
-        const float StatLineGap = -4f;   // pulls caption and score together so they read as one pair
-        const int StatSidePadding = 12;
-
-        /// <summary>
-        /// Centres a stat box's caption + score by their visible letters. The prefab pads 20 above and 15 below and
-        /// top-aligns each line, which left the pair sitting low in the box once the text was enlarged.
-        /// </summary>
-        void CentreStatBox(RectTransform stat)
-        {
-            if (stat == null) return;
-            var caption = stat.Find("Title") as RectTransform;
-            var score = stat.Find("Score") as RectTransform;
-            FitText(caption, StatCaptionHeight, StatCaptionSize);
-            FitText(score, StatScoreHeight, StatScoreSize);
-            if (!stat.TryGetComponent(out VerticalLayoutGroup layout)) return;
-
-            // Capline alignment centres the capitals/digits themselves in each line box, so the empty space inside
-            // a line is (height - cap height) / 2 above and below its letters.
-            TMP_Text captionText = caption != null ? caption.GetComponent<TMP_Text>() : null;
-            TMP_Text scoreText = score != null ? score.GetComponent<TMP_Text>() : null;
-            if (captionText != null) captionText.verticalAlignment = VerticalAlignmentOptions.Capline;
-            if (scoreText != null) scoreText.verticalAlignment = VerticalAlignmentOptions.Capline;
-            float capRatio = CapRatio(scoreText != null ? scoreText : captionText);
-            float captionInset = (StatCaptionHeight - StatCaptionSize * capRatio) * 0.5f;
-            float scoreInset = (StatScoreHeight - StatScoreSize * capRatio) * 0.5f;
-
-            // Top padding that leaves the same gap above the caption's letters as below the score's.
-            float spare = stat.rect.height - StatCaptionHeight - StatScoreHeight - StatLineGap;
-            float top = (spare + scoreInset - captionInset) * 0.5f;
-
-            layout.padding = new RectOffset(StatSidePadding, StatSidePadding, Mathf.Max(0, Mathf.RoundToInt(top)), 0);
-            layout.spacing = StatLineGap;
-            layout.childAlignment = TextAnchor.UpperCenter;
-            layout.childForceExpandHeight = false;
-            // Full box width (the prefab's 200-wide text boxes made the caption shrink to fit).
-            layout.childControlWidth = true;
-            layout.childForceExpandWidth = true;
-        }
-
-        static float CapRatio(TMP_Text text)
-        {
-            var face = text != null && text.font != null ? text.font.faceInfo : default;
-            return face.pointSize > 0f && face.capLine > 0f ? face.capLine / face.pointSize : 0.7f;
-        }
-
-        /// <summary>Sets a text box's height (also for a parent layout group) and lets the text auto-size up to maxSize.</summary>
-        static void FitText(RectTransform rt, float height, float maxSize)
-        {
-            if (rt == null) return;
-            rt.sizeDelta = new Vector2(rt.sizeDelta.x, height);
-            if (!rt.TryGetComponent(out LayoutElement element)) element = rt.gameObject.AddComponent<LayoutElement>();
-            element.preferredHeight = height;
-            if (rt.TryGetComponent(out TMP_Text text))
-            {
-                text.enableAutoSizing = true;
-                text.fontSizeMax = maxSize;
             }
         }
 
@@ -1679,7 +1703,7 @@ namespace StackSurge.UI
             _ => _showTileShapes ? UiSprites.GlyphFor(k) : null
         };
 
-        Color GlyphColorFor(TileKind k) => k switch
+        static Color GlyphColorFor(TileKind k) => k switch
         {
             TileKind.Wild => new Color(0.16f, 0.20f, 0.30f, 0.9f),
             TileKind.Bomb => new Color(1f, 1f, 1f, 0.95f),
@@ -2266,7 +2290,7 @@ namespace StackSurge.UI
         // Empty cells are transparent: the static slot layer underneath shows through.
         static readonly Color EmptyCell = new Color(UiSkin.Slot.r, UiSkin.Slot.g, UiSkin.Slot.b, 0f);
 
-        Color ColorFor(TileKind k) => k switch
+        static Color ColorFor(TileKind k) => k switch
         {
             TileKind.Empty => EmptyCell,
             TileKind.Red => TileRed,
@@ -2278,6 +2302,10 @@ namespace StackSurge.UI
             TileKind.Bomb => TileBomb,
             _ => Color.gray
         };
+
+        /// <summary>A board block's colour and its glyph's colour (players' default emblems use them too).</summary>
+        internal static Color TileColor(TileKind k) => ColorFor(k);
+        internal static Color TileGlyphColor(TileKind k) => GlyphColorFor(k);
 
         void EnsureInputSystemUi()
         {
