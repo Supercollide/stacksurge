@@ -10,6 +10,14 @@ namespace StackSurge.Core
     {
         public int TotalScore { get; private set; }
         public int BestComboMultiplier { get; private set; }
+
+        /// <summary>Clears in a row so far, each within the combo window of the last. Unlike the multiplier it doesn't stop at 5.</summary>
+        public int CurrentChain => _comboLinks;
+        public int BestChain { get; private set; }
+        public float ComboWindow => _comboWindow;
+
+        /// <summary>Seconds left to make the next clear before the chain (and combo) ends; 0 when no chain is running.</summary>
+        public float ChainTimeLeft(float now) => _comboLinks > 0 ? Mathf.Max(0f, _comboWindow - (now - _lastClearTime)) : 0f;
         public int CurrentComboMultiplier => Mathf.RoundToInt(_comboMultiplier);
         public float CurrentCarryMultiplier => _carryMultiplier;
 
@@ -24,6 +32,7 @@ namespace StackSurge.Core
         {
             TotalScore = 0;
             BestComboMultiplier = 1;
+            BestChain = 0;
             _carryMultiplier = 1f;
             _comboMultiplier = 1f;
             _comboLinks = 0;
@@ -86,6 +95,7 @@ namespace StackSurge.Core
                 }
 
                 BestComboMultiplier = Mathf.Max(BestComboMultiplier, Mathf.RoundToInt(_comboMultiplier));
+                BestChain = Mathf.Max(BestChain, _comboLinks);
 
                 int basePts = largestMatchSize <= 3 ? 100 : largestMatchSize == 4 ? 250 : 500;
                 int comboBonus = Mathf.Max(0, _comboLinks - 1) * 100;

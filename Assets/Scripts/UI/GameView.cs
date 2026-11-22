@@ -85,11 +85,6 @@ namespace StackSurge.UI
         [SerializeField] Button _pauseMenuResumeButton;
         [SerializeField] Button _pauseMenuMainMenuButton;
 
-        [Header("Slow Rise Badge")]
-        [SerializeField] GameObject _slowRiseBadgePrefab;
-        // ────────────────────────────────────────────────────────────────────
-
-
         ScreenShake _shake;
 
         Action<int> _onColumnClicked;
@@ -119,6 +114,7 @@ namespace StackSurge.UI
         private int _hudTimeSeconds = -1;
         private int _hudRiseTenths = -1;
         private bool _hudInGrace;
+        private int _hudSlowSeconds;
         private int _nextPreviewKind = -1;
         private int _queuedPreviewKind = -1;
 
@@ -128,6 +124,23 @@ namespace StackSurge.UI
         public Func<int> GetActiveRunScore;
         /// <summary>Raised when the player confirms ending the run from the pause menu.</summary>
         public Action OnQuitRunConfirmed;
+        public Action OnChallengesOpened;
+        /// <summary>Opens the Achievements screen (menu button, profile badge). Set by the game.</summary>
+        public Action OnAchievementsTriggered;
+        /// <summary>The badge on the player's profile ("chain:3", or "" for none). Set by the game.</summary>
+        public Func<string> GetProfileBadge;
+
+        /// <summary>The font the scene's UI is set in (Montserrat Bold), for screens built in code.</summary>
+        public TMP_FontAsset UiFont => _hudText != null && _hudText.font != null ? _hudText.font : TMP_Settings.defaultFontAsset;
+
+        Button _mainMenuAchievementsButton;
+        Image _profileBadge;
+
+        /// <summary>Redraws the Challenges screen if it's open (after the day's set or a challenge changed).</summary>
+        public void RefreshChallengesIfOpen()
+        {
+            if (IsChallengesOpen) PopulateChallenges();
+        }
 
         public bool IsPaused => _isPaused;
         public bool IsHelpOpen => _helpPanel != null && _helpPanel.activeSelf;
@@ -384,6 +397,9 @@ namespace StackSurge.UI
             }
             else Debug.LogWarning("[GameView] _mainMenuHowToPlayButton not assigned.");
 
+            BuildAchievementsButton();
+            BuildProfileBadge();
+
             // PROGRAMMATIC MAIN MENU BUTTONS (NOTIFICATIONS & HOW TO PLAY FALLBACK)
             if (_mainMenuRoot != null)
             {
@@ -495,6 +511,71 @@ namespace StackSurge.UI
 
 
 
+        const float MenuButtonStep = 150f; // the prefab places the menu buttons 150 apart
+
+        /// <summary>
+        /// ACHIEVEMENTS goes under DAILY CHALLENGES: a copy of that button, with every menu button below it moved down
+        /// one slot.
+        /// </summary>
+        void BuildAchievementsButton()
+        {
+            if (_mainMenuChallengesButton == null) return;
+            var source = (RectTransform)_mainMenuChallengesButton.transform;
+            float slotY = source.anchoredPosition.y - MenuButtonStep;
+
+            foreach (Transform child in source.parent)
+            {
+                if (child == source || !child.TryGetComponent(out Button _)) continue;
+                var rt = (RectTransform)child;
+                if (rt.anchorMin == source.anchorMin && rt.anchorMax == source.anchorMax && rt.anchoredPosition.y <= slotY + 1f)
+                    rt.anchoredPosition -= new Vector2(0f, MenuButtonStep);
+            }
+
+            var go = Instantiate(_mainMenuChallengesButton.gameObject, source.parent, false);
+            go.name = "AchievementsBtn";
+            go.transform.SetSiblingIndex(source.GetSiblingIndex() + 1);
+            ((RectTransform)go.transform).anchoredPosition = new Vector2(source.anchoredPosition.x, slotY);
+
+            _mainMenuAchievementsButton = go.GetComponent<Button>();
+            _mainMenuAchievementsButton.onClick = new Button.ButtonClickedEvent(); // drop anything copied from Challenges
+            _mainMenuAchievementsButton.onClick.AddListener(() => OnAchievementsTriggered?.Invoke());
+            var label = go.GetComponentInChildren<TextMeshProUGUI>(true);
+            if (label != null) label.text = "ACHIEVEMENTS";
+        }
+
+        const float ProfileBadgeSize = 84f;
+
+        /// <summary>The badge the player shows, in the profile card's top-right corner. Tapping it opens Achievements.</summary>
+        void BuildProfileBadge()
+        {
+            var card = _mainMenuRoot.transform.Find("StatsCard");
+            if (card == null) return;
+
+            var go = new GameObject("ProfileBadge", typeof(RectTransform));
+            go.transform.SetParent(card, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = rt.pivot = Vector2.one;
+            rt.anchoredPosition = new Vector2(-18f, -12f);
+            rt.sizeDelta = new Vector2(ProfileBadgeSize, ProfileBadgeSize);
+            _profileBadge = go.AddComponent<Image>();
+            _profileBadge.preserveAspect = true;
+            var button = go.AddComponent<Button>();
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(() => OnAchievementsTriggered?.Invoke());
+            go.SetActive(false);
+        }
+
+        void RefreshProfileBadge()
+        {
+            if (_profileBadge == null) return;
+            string badge = "";
+            try { badge = GetProfileBadge?.Invoke() ?? ""; }
+            catch (Exception e) { Debug.LogWarning("[GameView] Reading the profile badge failed: " + e.Message); }
+            Sprite sprite = BadgeArt.ForBadge(badge);
+            _profileBadge.sprite = sprite;
+            _profileBadge.gameObject.SetActive(sprite != null);
+        }
+
         /// <summary>
         /// Call with <c>true</c> when the interactive tutorial starts and <c>false</c> when it ends.
         /// Locks every HUD/menu button that should not be reachable mid-tutorial so only the
@@ -514,6 +595,7 @@ namespace StackSurge.UI
             if (_mainMenuChallengesButton != null) _mainMenuChallengesButton.interactable = canInteract;
             if (_mainMenuLeaderboardButton != null) _mainMenuLeaderboardButton.interactable = canInteract;
             if (_mainMenuHowToPlayButton != null) _mainMenuHowToPlayButton.interactable = canInteract;
+            if (_mainMenuAchievementsButton != null) _mainMenuAchievementsButton.interactable = canInteract;
             if (_mainMenuVibrationToggle != null) _mainMenuVibrationToggle.interactable = canInteract;
             if (_mainMenuSaveNameButton != null) _mainMenuSaveNameButton.interactable = canInteract;
         }
@@ -548,9 +630,12 @@ namespace StackSurge.UI
         /// Called every frame during a run. Text and previews are only touched when the displayed value changes,
         /// so the HUD doesn't allocate strings or rebuild TMP meshes every frame.
         /// </summary>
-        public void UpdateHud(int score, float timeAlive, float riseSeconds, float riseProgress01, bool inGrace, TileKind current, TileKind next)
+        /// <param name="slowSecondsLeft">Slow rise time left after a perfect clear; the rise line and bar turn teal while it lasts.</param>
+        public void UpdateHud(int score, float timeAlive, float riseSeconds, float riseProgress01, bool inGrace, TileKind current, TileKind next,
+            float slowSecondsLeft = 0f)
         {
-            UpdateRiseBar(riseProgress01, inGrace, riseSeconds);
+            bool slow = slowSecondsLeft > 0f && !inGrace;
+            UpdateRiseBar(riseProgress01, inGrace, riseSeconds, slow);
 
             if (_scoreText == null) return;
 
@@ -586,18 +671,22 @@ namespace StackSurge.UI
 
             int timeSeconds = (int)timeAlive;
             int riseTenths = Mathf.RoundToInt(riseSeconds * 10f);
-            if (_hudText != null && (timeSeconds != _hudTimeSeconds || riseTenths != _hudRiseTenths || inGrace != _hudInGrace))
+            int slowSeconds = slow ? Mathf.CeilToInt(slowSecondsLeft) : 0;
+            if (_hudText != null && (timeSeconds != _hudTimeSeconds || riseTenths != _hudRiseTenths || inGrace != _hudInGrace
+                                     || slowSeconds != _hudSlowSeconds))
             {
                 _hudTimeSeconds = timeSeconds;
                 _hudRiseTenths = riseTenths;
                 _hudInGrace = inGrace;
+                _hudSlowSeconds = slowSeconds;
 
                 string riseLine = inGrace
-                    ? $"Auto-rise starts in: {riseTenths / 10f:0.0}s"
-                    : $"Next auto-rise: {riseTenths / 10f:0.0}s";
+                    ? $"<color=#60A5FA>Auto-rise starts in: {riseTenths / 10f:0.0}s</color>"
+                    : slowSeconds > 0
+                        ? $"<color=#{ColorUtility.ToHtmlStringRGB(UiSkin.Teal)}>Next auto-rise: {riseTenths / 10f:0.0}s · SLOW {slowSeconds}s</color>"
+                        : $"<color=#60A5FA>Next auto-rise: {riseTenths / 10f:0.0}s</color>";
                 _hudText.text =
-                    $"Time: <color=#A0A0A0>{timeSeconds / 60:00}:{timeSeconds % 60:00}</color>\n" +
-                    $"<color=#60A5FA>{riseLine}</color>";
+                    $"Time: <color=#A0A0A0>{timeSeconds / 60:00}:{timeSeconds % 60:00}</color>\n" + riseLine;
             }
 
             UpdatePreviewSquare(_nextPreviewImg, _nextInnerIcon, current, ref _nextPreviewKind);
@@ -829,6 +918,8 @@ namespace StackSurge.UI
             {
                 _mainMenuPlayerNameText.text = save.PlayerDisplayName ?? "";
             }
+
+            RefreshProfileBadge();
         }
 
         /// <summary>
@@ -843,6 +934,7 @@ namespace StackSurge.UI
 
             if (open)
             {
+                FitHelpLegend();
                 _helpFrozeClock = IsRunActive != null && IsRunActive() && Time.timeScale > 0f;
                 if (_helpFrozeClock) Time.timeScale = 0f;
             }
@@ -872,6 +964,7 @@ namespace StackSurge.UI
                 _challengesRoot.transform.localScale = Vector3.one * 0.9f;
                 _challengesRoot.transform.DOScale(1f, 0.25f).SetEase(Ease.OutBack).SetUpdate(true);
 
+                OnChallengesOpened?.Invoke(); // lets the game move to a new day's set first
                 PopulateChallenges();
 
                 if (_resetTimerCoroutine != null) StopCoroutine(_resetTimerCoroutine);
@@ -1065,10 +1158,9 @@ namespace StackSurge.UI
                             rowView.StatusIcon.color = item.Completed ? completedColor : pendingColor;
                         }
                         if (rowView.ProgressText != null)
-                            rowView.ProgressText.text =
-                                $"{GameOverPanel.FormatChallengeValue(item.Type, item.Progress)} / {GameOverPanel.FormatChallengeValue(item.Type, item.TargetValue)}";
+                            rowView.ProgressText.text = GameOverPanel.ProgressText(item);
 
-                        float ratio = item.TargetValue > 0 ? (float)item.Progress / item.TargetValue : 0f;
+                        float ratio = GameOverPanel.BarRatio(item); // one-game goals stay empty until done
 
                         if (rowView.ProgressBarFill != null)
                         {
@@ -1205,7 +1297,7 @@ namespace StackSurge.UI
                     progTextRt.anchoredPosition = new Vector2(progTextRightOffset, 15);
                     progTextRt.sizeDelta = new Vector2(150, 40);
                     var progText = progTextGo.AddComponent<TextMeshProUGUI>();
-                    progText.text = $"{item.Progress} / {item.TargetValue}";
+                    progText.text = GameOverPanel.ProgressText(item);
                     progText.fontSize = 20;
                     progText.alignment = TextAlignmentOptions.Right;
                     progText.color = new Color(0.9f, 0.9f, 0.9f);
@@ -1232,7 +1324,7 @@ namespace StackSurge.UI
                     barFillRt.sizeDelta = new Vector2(0, 0);
                     var barFillImg = barFillGo.AddComponent<Image>();
 
-                    float ratio = item.TargetValue > 0 ? (float)item.Progress / item.TargetValue : 0f;
+                    float ratio = GameOverPanel.BarRatio(item); // one-game goals stay empty until done
                     barFillImg.color = Color.Lerp(new Color(0.2f, 0.6f, 1.0f), new Color(0.3f, 0.8f, 0.4f), ratio);
 
                     float targetWidth = ratio * barBgRt.sizeDelta.x;
@@ -1688,6 +1780,7 @@ namespace StackSurge.UI
             trackRt.anchorMin = trackRt.anchorMax = board.anchorMin;
             trackRt.sizeDelta = new Vector2(board.sizeDelta.x, RiseBarHeight);
             trackRt.anchoredPosition = board.anchoredPosition + new Vector2(0f, board.sizeDelta.y * 0.5f + RiseBarGap);
+            _riseTrackRt = trackRt;
             var track = trackGo.AddComponent<Image>();
             track.color = UiSkin.Slot;
             track.raycastTarget = false;
@@ -1703,9 +1796,160 @@ namespace StackSurge.UI
             _riseFillImg.color = UiSkin.Primary;
             _riseFillImg.raycastTarget = false;
             UiSprites.ApplyRounded(_riseFillImg, RiseBarHeight * 0.5f);
+
+            BuildChainMeter(board);
         }
 
-        void UpdateRiseBar(float progress01, bool inGrace, float secondsLeft)
+        // ── Chain counter: "CHAIN 7 / 15" above the board, with the time left to keep it going ──────────────
+        static readonly Color ChainColor = new Color(1f, 0.45f, 0.15f); // the combo toast's orange
+        const float ChainMeterBarWidth = 240f;
+        RectTransform _riseTrackRt;
+        RectTransform _chainRoot;
+        RectTransform _chainFill;
+        Image _chainFillImg;
+        TextMeshProUGUI _chainLabel;
+        CanvasGroup _chainGroup;
+        int _chainShown = -1, _chainTargetShown = -1;
+        bool _chainActive;
+
+        void BuildChainMeter(RectTransform board)
+        {
+            var go = new GameObject("ChainMeter");
+            go.transform.SetParent(board.parent, false);
+            var rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = board.anchorMin;
+            rt.sizeDelta = new Vector2(420f, 64f);
+            // Between the timer lines and the rise bar; PlaceChainMeter fits it to the real gap when it appears.
+            rt.anchoredPosition = board.anchoredPosition + new Vector2(0f, board.sizeDelta.y * 0.5f + RiseBarGap + RiseBarHeight + 46f);
+            _chainRoot = rt;
+            _chainGroup = go.AddComponent<CanvasGroup>();
+            _chainGroup.alpha = 0f;
+            _chainGroup.blocksRaycasts = false;
+            _chainGroup.interactable = false;
+
+            var labelGo = new GameObject("Label");
+            labelGo.transform.SetParent(go.transform, false);
+            var labelRt = labelGo.AddComponent<RectTransform>();
+            labelRt.anchorMin = new Vector2(0f, 1f);
+            labelRt.anchorMax = new Vector2(1f, 1f);
+            labelRt.pivot = new Vector2(0.5f, 1f);
+            labelRt.sizeDelta = new Vector2(0f, 44f);
+            labelRt.anchoredPosition = Vector2.zero;
+            _chainLabel = labelGo.AddComponent<TextMeshProUGUI>();
+            if (_hudText != null) _chainLabel.font = _hudText.font;
+            _chainLabel.fontSize = 38f;
+            _chainLabel.fontStyle = FontStyles.Bold;
+            _chainLabel.characterSpacing = 3f;
+            _chainLabel.color = ChainColor;
+            _chainLabel.alignment = TextAlignmentOptions.Center;
+            _chainLabel.textWrappingMode = TextWrappingModes.NoWrap;
+            _chainLabel.raycastTarget = false;
+
+            var trackGo = new GameObject("Window");
+            trackGo.transform.SetParent(go.transform, false);
+            var trackRt = trackGo.AddComponent<RectTransform>();
+            trackRt.anchorMin = trackRt.anchorMax = trackRt.pivot = new Vector2(0.5f, 0f);
+            trackRt.sizeDelta = new Vector2(ChainMeterBarWidth, 8f);
+            trackRt.anchoredPosition = new Vector2(0f, 4f);
+            var track = trackGo.AddComponent<Image>();
+            track.color = UiSkin.Slot;
+            track.raycastTarget = false;
+            UiSprites.ApplyRounded(track, 4f);
+
+            var fillGo = new GameObject("Fill");
+            fillGo.transform.SetParent(trackGo.transform, false);
+            _chainFill = fillGo.AddComponent<RectTransform>();
+            _chainFill.anchorMin = Vector2.zero;
+            _chainFill.anchorMax = new Vector2(1f, 1f);
+            _chainFill.offsetMin = _chainFill.offsetMax = Vector2.zero;
+            _chainFillImg = fillGo.AddComponent<Image>();
+            _chainFillImg.color = ChainColor;
+            _chainFillImg.raycastTarget = false;
+            UiSprites.ApplyRounded(_chainFillImg, 4f);
+        }
+
+        /// <summary>
+        /// Chain counter, called every frame of a run. Shows from the second clear in a row; the bar is the time left
+        /// to make the next clear. When the chain ends, the final count stays a moment, then fades.
+        /// </summary>
+        /// <param name="target">Today's open chain challenge target, or 0 to show the count alone.</param>
+        public void UpdateChain(int chain, float windowLeft01, int target)
+        {
+            if (_chainGroup == null) return;
+            bool active = chain >= 2 && windowLeft01 > 0f;
+
+            if (active)
+            {
+                if (!_chainActive)
+                {
+                    _chainActive = true;
+                    PlaceChainMeter();
+                    _chainGroup.DOKill();
+                    _chainGroup.alpha = 1f;
+                }
+                if (chain != _chainShown || target != _chainTargetShown)
+                {
+                    _chainShown = chain;
+                    _chainTargetShown = target;
+                    bool reached = target > 0 && chain >= target;
+                    _chainLabel.text = target > 0
+                        ? $"CHAIN {chain} <size=70%><color=#{ColorUtility.ToHtmlStringRGB(UiSkin.TextMuted)}>/ {target}</color></size>"
+                        : $"CHAIN {chain}";
+                    _chainLabel.color = reached ? UiSkin.Teal : ChainColor;
+                    _chainFillImg.color = reached ? UiSkin.Teal : ChainColor;
+                    _chainLabel.transform.DOKill(true);
+                    _chainLabel.transform.DOPunchScale(Vector3.one * 0.12f, 0.2f, 6, 1f).SetLink(_chainLabel.gameObject);
+                }
+                _chainFill.anchorMax = new Vector2(Mathf.Clamp01(windowLeft01), 1f);
+                return;
+            }
+
+            if (_chainActive)
+            {
+                // The chain just ended: keep the final count up briefly, then fade out.
+                _chainActive = false;
+                _chainShown = _chainTargetShown = -1;
+                _chainFill.anchorMax = new Vector2(0f, 1f);
+                _chainGroup.DOKill();
+                _chainGroup.DOFade(0f, 0.3f).SetDelay(0.6f).SetLink(_chainGroup.gameObject);
+            }
+        }
+
+        /// <summary>
+        /// Centres the counter between the bottom of the timer lines and the top of the rise bar, and shrinks it when
+        /// that gap is tight (squarer screens such as tablets leave much less room than tall phones).
+        /// </summary>
+        void PlaceChainMeter()
+        {
+            if (_chainRoot == null || _riseTrackRt == null || _hudText == null) return;
+            var parent = (RectTransform)_chainRoot.parent;
+
+            var corners = new Vector3[4];
+            _riseTrackRt.GetWorldCorners(corners);                  // [1] is the top-left corner
+            float barTop = parent.InverseTransformPoint(corners[1]).y;
+
+            _hudText.ForceMeshUpdate();
+            var bounds = _hudText.textBounds;
+            float textBottom = parent.InverseTransformPoint(_hudText.rectTransform.TransformPoint(new Vector3(0f, bounds.min.y, 0f))).y;
+
+            float gap = textBottom - barTop;
+            const float margin = 6f;
+            float scale = Mathf.Clamp((gap - 2f * margin) / _chainRoot.sizeDelta.y, 0.5f, 1f);
+            _chainRoot.localScale = new Vector3(scale, scale, 1f);
+            var p = _chainRoot.localPosition;
+            _chainRoot.localPosition = new Vector3(p.x, (textBottom + barTop) * 0.5f, p.z);
+        }
+
+        void HideChainNow()
+        {
+            if (_chainGroup == null) return;
+            _chainGroup.DOKill();
+            _chainGroup.alpha = 0f;
+            _chainActive = false;
+            _chainShown = _chainTargetShown = -1;
+        }
+
+        void UpdateRiseBar(float progress01, bool inGrace, float secondsLeft, bool slow)
         {
             if (_riseFill == null) return;
             float p = Mathf.Clamp01(progress01);
@@ -1715,10 +1959,11 @@ namespace StackSurge.UI
                 _riseShown = p;
             }
 
-            int state = inGrace ? 0 : secondsLeft <= 1.0f ? 2 : 1;
+            // Grey in the grace period, teal during slow rise, orange in the last second before a row comes.
+            int state = inGrace ? 0 : secondsLeft <= 1.0f ? 2 : slow ? 3 : 1;
             if (state == _riseColorState) return;
             _riseColorState = state;
-            _riseFillImg.color = state == 0 ? UiSkin.TextMuted : state == 2 ? UiSkin.Bolt : UiSkin.Primary;
+            _riseFillImg.color = state switch { 0 => UiSkin.TextMuted, 2 => UiSkin.Bolt, 3 => UiSkin.Teal, _ => UiSkin.Primary };
         }
 
         public void TriggerClearShake(int tileCount)
@@ -1796,12 +2041,11 @@ namespace StackSurge.UI
             return _toastParent;
         }
 
-        /// <summary>Removes reward toasts and the slow-rise badge (run ended, menu shown, new run).</summary>
+        /// <summary>Removes reward toasts and the chain counter (run ended, menu shown, new run).</summary>
         void ClearTransientUi()
         {
             ResetDangerGlow(); // the run almost always ends in danger; don't keep the pulse looping behind menus
-            if (_slowRiseExpireCoroutine != null) { StopCoroutine(_slowRiseExpireCoroutine); _slowRiseExpireCoroutine = null; }
-            if (_slowRiseBadgeGo != null) { Destroy(_slowRiseBadgeGo); _slowRiseBadgeGo = null; }
+            HideChainNow();
             if (_toastParent == null) return;
             for (int i = _toastParent.childCount - 1; i >= 0; i--)
                 Destroy(_toastParent.GetChild(i).gameObject);
@@ -1906,60 +2150,6 @@ namespace StackSurge.UI
             }
         }
 
-        // Persistent badge – e.g. "SLOW RISE" while SlowFillBuff is active
-        GameObject _slowRiseBadgeGo;
-        Coroutine _slowRiseExpireCoroutine;
-
-        public void ShowSlowRiseBadge(float durationSeconds)
-        {
-            // Kill any existing badge
-            if (_slowRiseBadgeGo != null) { Destroy(_slowRiseBadgeGo); _slowRiseBadgeGo = null; }
-            if (_slowRiseExpireCoroutine != null) { StopCoroutine(_slowRiseExpireCoroutine); _slowRiseExpireCoroutine = null; }
-
-            if (_slowRiseBadgePrefab == null)
-            {
-                Debug.LogWarning("[GameView] Slow rise badge prefab is not assigned.");
-                return;
-            }
-
-            var parent = GetToastParent();
-            var go = Instantiate(_slowRiseBadgePrefab, parent, false);
-            go.name = "SlowRiseBadge";
-            _slowRiseBadgeGo = go;
-            if (_gridMaskRt != null && go.transform is RectTransform badgeRt)
-            {
-                badgeRt.anchorMin = badgeRt.anchorMax = badgeRt.pivot = new Vector2(0.5f, 0.5f);
-                badgeRt.anchoredPosition = _gridMaskRt.anchoredPosition
-                    + new Vector2(0f, _gridMaskRt.sizeDelta.y * 0.5f + RiseBarGap + RiseBarHeight + 46f);
-            }
-
-            var cg = go.GetComponent<CanvasGroup>();
-            if (cg == null) cg = go.AddComponent<CanvasGroup>();
-            cg.alpha = 0f;
-            cg.DOFade(1f, 0.3f).SetUpdate(true).SetLink(go);
-            go.transform.localScale = Vector3.one * 0.8f;
-
-            // Pop in, then a gentle continuous pulse to stay visible. Chained so the two scale tweens don't fight
-            // (infinite loops can't live inside a Sequence, so the pulse starts from OnComplete).
-            go.transform.DOScale(1f, 0.3f).SetEase(Ease.OutBack).SetUpdate(true).SetLink(go)
-                .OnComplete(() => go.transform.DOScale(1.04f, 0.7f).SetLoops(-1, LoopType.Yoyo)
-                    .SetEase(Ease.InOutSine).SetUpdate(true).SetLink(go));
-
-            // Auto-expire
-            _slowRiseExpireCoroutine = StartCoroutine(ExpireSlowRiseBadge(go, cg, durationSeconds));
-        }
-
-        IEnumerator ExpireSlowRiseBadge(GameObject badge, CanvasGroup cg, float delay)
-        {
-            yield return new WaitForSeconds(delay - 0.5f);
-            _slowRiseExpireCoroutine = null;
-            if (badge == null) yield break;
-            cg.DOFade(0f, 0.5f).SetUpdate(true).SetLink(badge).OnComplete(() =>
-            {
-                if (badge != null) Destroy(badge);
-                if (_slowRiseBadgeGo == badge) _slowRiseBadgeGo = null;
-            });
-        }
         // ─────────────────────────────────────────────────────────────────────
 
         public IEnumerator BlinkTilesCoroutine(IEnumerable<(int r, int c)> tiles, TileKind[,] boardCells, float blinkTime)
@@ -2782,8 +2972,33 @@ namespace StackSurge.UI
             AddLegendRow(legendGo.transform, LegendTile(TileKind.Bomb), "Bomb", "Clears the 3x3 area where it lands.");
             AddLegendRow(legendGo.transform, LegendRiseBar(), "Rising rows",
                 "When the bar fills, a new row pushes up. Keep every column off the top.");
-            AddLegendRow(legendGo.transform, LegendCombo(), "Combos",
-                "Clear again within 3 seconds to multiply your points.");
+            AddLegendRow(legendGo.transform, LegendCombo(), "Combos and chains",
+                "Clear again within 3 seconds to multiply your points, up to x5. The chain above the board counts how many in a row.");
+            AddLegendRow(legendGo.transform, LegendCombo("+200", new Color(0.4f, 0.9f, 1f), 28), "Row clear",
+                "Clear a whole row in one go for +200.");
+            AddLegendRow(legendGo.transform, LegendRiseBar(UiSkin.Teal), "Perfect clear",
+                "Empty the whole board for +2,000. Rows then rise slower for 12 seconds, and the rise bar turns teal.");
+        }
+
+        /// <summary>
+        /// Shrinks the How to Play list when the panel is too short for it (squarer screens such as tablets), so the
+        /// last entry stays above the Settings button. Runs on open, when the panel's layout is live.
+        /// </summary>
+        void FitHelpLegend()
+        {
+            var legend = _helpPanel.transform.Find("HowToPlayLegend") as RectTransform;
+            if (legend == null) return;
+            var settings = _helpPanel.transform.Find("NotificationSettingsBtn") as RectTransform;
+            var panel = (RectTransform)_helpPanel.transform;
+
+            legend.localScale = Vector3.one;
+            LayoutRebuilder.ForceRebuildLayoutImmediate(legend);
+            float fromTop = -legend.anchoredPosition.y;                                    // list top, below the panel top
+            float buttonsTop = settings != null ? settings.anchoredPosition.y + settings.sizeDelta.y : 0f; // above the panel bottom
+            float available = panel.rect.height - fromTop - buttonsTop - 24f;
+            float needed = legend.rect.height;
+            if (needed > 0f && needed > available)
+                legend.localScale = Vector3.one * Mathf.Max(0.6f, available / needed); // the list is pinned at its top edge
         }
 
         GameObject LegendTile(TileKind kind)
@@ -2809,7 +3024,7 @@ namespace StackSurge.UI
             return go;
         }
 
-        GameObject LegendRiseBar()
+        GameObject LegendRiseBar(Color? fillColor = null)
         {
             var go = new GameObject("Icon");
             go.AddComponent<RectTransform>();
@@ -2830,22 +3045,23 @@ namespace StackSurge.UI
             fillRt.anchorMax = new Vector2(0.65f, 1f);
             fillRt.offsetMin = fillRt.offsetMax = Vector2.zero;
             var fill = fillGo.AddComponent<Image>();
-            fill.color = UiSkin.Primary;
+            fill.color = fillColor ?? UiSkin.Primary;
             fill.raycastTarget = false;
             UiSprites.ApplyRounded(fill, RiseBarHeight * 0.5f);
             return go;
         }
 
-        GameObject LegendCombo()
+        /// <summary>A dark pill with a short label in the colour of its in-game message (combo "x3", row clear "+200").</summary>
+        GameObject LegendCombo(string text = "x3", Color? color = null, float size = 34f)
         {
             var go = new GameObject("Icon");
             var pill = go.AddComponent<Image>();
             pill.color = new Color(0.04f, 0.06f, 0.11f, 0.8f);
             pill.raycastTarget = false;
             UiSprites.ApplyRounded(pill, 24f);
-            var label = CreateTmp(go.transform, "Text", 34, FontStyles.Bold, TextAlignmentOptions.Center);
-            label.text = "x3";
-            label.color = new Color(1f, 0.45f, 0.15f);
+            var label = CreateTmp(go.transform, "Text", size, FontStyles.Bold, TextAlignmentOptions.Center);
+            label.text = text;
+            label.color = color ?? new Color(1f, 0.45f, 0.15f);
             var lrt = label.rectTransform;
             lrt.anchorMin = Vector2.zero;
             lrt.anchorMax = Vector2.one;

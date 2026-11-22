@@ -39,6 +39,11 @@ namespace StackSurge.Meta
         [Header("Assets")]
         [SerializeField] private LeaderboardRowView _rowPrefab;
 
+        /// <summary>The badge on your own profile ("chain:3" or ""), shown on your row without a lookup.</summary>
+        public Func<string> OwnBadge;
+        /// <summary>A badge on a row was tapped: (badge, player name).</summary>
+        public Action<string, string> BadgeTapped;
+
         /// <summary>True while the leaderboard panel is visible (used by the Android Back handler).</summary>
         public bool IsOpen => _leaderboardRoot != null && _leaderboardRoot.activeSelf;
         [SerializeField] private Sprite _goldMedal, _silverMedal, _bronzeMedal;
@@ -153,6 +158,8 @@ namespace StackSurge.Meta
             public bool hasPlayerEntry;
             public LeaderboardEntryData playerEntry;
             public string[] requestsOff;
+            public string[] badgeIds;   // players' chosen badges, parallel arrays (JsonUtility has no dictionaries)
+            public string[] badges;
         }
 
         private const string SavedBoardKey = "LeaderboardCache.AllTimeGlobal";
@@ -162,6 +169,7 @@ namespace StackSurge.Meta
         private readonly Dictionary<(LeaderboardScope, LeaderboardFilterMode), BoardSnapshot> _boards =
             new Dictionary<(LeaderboardScope, LeaderboardFilterMode), BoardSnapshot>();
         private readonly HashSet<string> _requestsOff = new HashSet<string>(); // players known to have friend requests off
+        private readonly Dictionary<string, string> _badges = new Dictionary<string, string>(); // player id -> badge they show
         private readonly List<LeaderboardRowView> _rows = new List<LeaderboardRowView>();
         private bool _savedBoardLoaded;
         private int _lastFriendCount = -1;
@@ -318,6 +326,17 @@ namespace StackSurge.Meta
             // Global: when you're outside the top list, your own row goes underneath it.
             if (filter == LeaderboardFilterMode.Global && board.HasPlayerEntry && IndexOfCurrentPlayer(board.Entries) < 0)
                 AddRow(board.PlayerEntry, board.Entries.Length, FriendRelationState.Self, animate);
+            ApplyBadges();
+        }
+
+        /// <summary>Puts each row's badge on it. When any row has one, every name moves over so the names line up.</summary>
+        private void ApplyBadges()
+        {
+            bool any = false;
+            foreach (var row in _rows)
+                if (row != null && AchievementCatalog.TryParseBadge(BadgeFor(row.IsCurrentPlayer, row.PlayerId), out _, out _)) { any = true; break; }
+            foreach (var row in _rows)
+                if (row != null) row.SetBadge(BadgeFor(row.IsCurrentPlayer, row.PlayerId), BadgeTapped, any);
         }
 
         private void AddRow(LeaderboardEntryData entry, int index, FriendRelationState relation, bool animate)
@@ -328,6 +347,16 @@ namespace StackSurge.Meta
             if (!string.IsNullOrEmpty(entry.PlayerId) && _requestsOff.Contains(entry.PlayerId))
                 row.SetTargetDisallowsRequests();
             _rows.Add(row);
+        }
+
+        private string BadgeFor(bool isCurrentPlayer, string playerId)
+        {
+            if (isCurrentPlayer)
+            {
+                try { return OwnBadge?.Invoke() ?? ""; }
+                catch { return ""; }
+            }
+            return !string.IsNullOrEmpty(playerId) && _badges.TryGetValue(playerId, out string badge) ? badge : "";
         }
 
         /// <summary>First load with nothing saved: a line saying what is loading and placeholder rows in the list's shape.</summary>
@@ -490,6 +519,8 @@ namespace StackSurge.Meta
                     hasPlayerEntry = board.HasPlayerEntry,
                     playerEntry = board.PlayerEntry,
                     requestsOff = new List<string>(_requestsOff).ToArray(),
+                    badgeIds = new List<string>(_badges.Keys).ToArray(),
+                    badges = new List<string>(_badges.Values).ToArray(),
                 };
                 PlayerPrefs.SetString(SavedBoardKey, JsonUtility.ToJson(saved));
                 PlayerPrefs.Save();
@@ -508,6 +539,10 @@ namespace StackSurge.Meta
                 var saved = JsonUtility.FromJson<SavedBoard>(json);
                 if (saved?.entries == null) return;
                 if (saved.requestsOff != null) _requestsOff.UnionWith(saved.requestsOff);
+                if (saved.badgeIds != null && saved.badges != null && saved.badgeIds.Length == saved.badges.Length)
+                    for (int i = 0; i < saved.badgeIds.Length; i++)
+                        if (!string.IsNullOrEmpty(saved.badgeIds[i]) && !_badges.ContainsKey(saved.badgeIds[i]))
+                            _badges[saved.badgeIds[i]] = saved.badges[i] ?? "";
                 var key = (LeaderboardScope.AllTime, LeaderboardFilterMode.Global);
                 if (!_boards.ContainsKey(key)) // a fetch that already finished is newer
                 {
@@ -560,40 +595,51 @@ namespace StackSurge.Meta
         }
 
         /// <summary>
-        /// Players who turned off incoming friend requests publish that preference; their Add Friend button is hidden.
-        /// Runs after rows are shown so the leaderboard never waits on these lookups. The answers are remembered, so
-        /// the next time the list opens those buttons are already hidden.
+        /// Every player's public preferences: the badge they show, and whether they take friend requests (players who
+        /// turned requests off get no Add Friend button). Runs after rows are shown so the leaderboard never waits on
+        /// these lookups. The answers are remembered, so the next time the list opens they are already applied.
         /// </summary>
         private async Task ApplyTargetPreferencesAsync(LeaderboardEntryData[] entries, int generation)
         {
             if (_getSocialPrefs == null) return;
 
-            var candidateIds = new List<string>();
+            var ids = new List<string>();
             for (int i = 0; i < entries.Length; i++)
             {
-                if (!entries[i].IsCurrentPlayer && RelationFor(entries[i]) == FriendRelationState.None && !string.IsNullOrEmpty(entries[i].PlayerId))
-                    candidateIds.Add(entries[i].PlayerId);
+                if (!entries[i].IsCurrentPlayer && !string.IsNullOrEmpty(entries[i].PlayerId))
+                    ids.Add(entries[i].PlayerId);
             }
-            if (candidateIds.Count == 0) return;
+            if (ids.Count == 0) return;
 
             Dictionary<string, SocialPrefs> prefs;
-            try { prefs = await _getSocialPrefs(candidateIds); }
+            try { prefs = await _getSocialPrefs(ids); }
             catch { return; }
             if (prefs == null) return;
 
             bool changed = false;
-            foreach (string id in candidateIds)
+            foreach (string id in ids)
             {
                 if (!prefs.TryGetValue(id, out var p) || p == null) continue;
-                changed |= p.allowFriendRequests ? _requestsOff.Remove(id) : _requestsOff.Add(id);
+                string badge = p.badge ?? "";
+                if (!_badges.TryGetValue(id, out string known) || known != badge)
+                {
+                    _badges[id] = badge;
+                    changed = true;
+                }
+                if (RelationFor(id) == FriendRelationState.None)
+                    changed |= p.allowFriendRequests ? _requestsOff.Remove(id) : _requestsOff.Add(id);
             }
             if (changed && _boards.TryGetValue((LeaderboardScope.AllTime, LeaderboardFilterMode.Global), out var allTime))
                 SaveBoardToDevice(allTime);
 
             if (generation != _refreshGeneration) return;
             foreach (var row in _rows)
-                if (row != null && !string.IsNullOrEmpty(row.PlayerId) && _requestsOff.Contains(row.PlayerId))
+            {
+                if (row == null || string.IsNullOrEmpty(row.PlayerId)) continue;
+                if (_requestsOff.Contains(row.PlayerId) && RelationFor(row.PlayerId) == FriendRelationState.None)
                     row.SetTargetDisallowsRequests();
+            }
+            ApplyBadges();
         }
 
         public void HideLeaderboard()

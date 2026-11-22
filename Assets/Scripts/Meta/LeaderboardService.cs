@@ -325,6 +325,25 @@ namespace StackSurge.Meta
             }
         }
 
+        /// <summary>
+        /// Puts a best score on the all-time board only (the board keeps the higher of the two). For the best score a
+        /// phone brings along when it switches to another player: no friend pushes, and the daily and weekly boards
+        /// are left alone because the score wasn't set today.
+        /// </summary>
+        public async Task SubmitAllTimeBestAsync(int score)
+        {
+            if (score <= 0 || PlayTestDevice.IsTestLab || !_isOnline) return;
+            try
+            {
+                await LeaderboardsService.Instance.AddPlayerScoreAsync(AllTimeLeaderboardId, score);
+                Debug.Log($"[LeaderboardService] Best score {score} carried over to '{AllTimeLeaderboardId}'.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[LeaderboardService] Carrying the best score over failed: " + e.Message);
+            }
+        }
+
         // ── Fetch current player's own entry ────────────────────────────────
         /// <summary>
         /// Returns the current player's leaderboard entry for the given scope,

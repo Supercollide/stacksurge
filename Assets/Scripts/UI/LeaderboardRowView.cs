@@ -44,8 +44,17 @@ namespace StackSurge.UI
         private const float ButtonFontSize = 20f;
         private const float GapAfterScore = 16f;
         private const float GapAfterName = 12f;
+        private const float BadgeSize = 50f;  // the row is 66 tall
+        private const float BadgeGap = 10f;
+
+        private Image _badge;
+        private string _badgeValue = "";
+        private string _playerName = "";
+        private float _nameLeft = float.NaN; // the prefab's left edge for the name, before a badge moves it
+        private Action<string, string> _onBadgeTapped;
 
         public string PlayerId => _playerId;
+        public bool IsCurrentPlayer { get; private set; }
 
         public void Setup(
             LeaderboardEntryData entry,
@@ -59,6 +68,8 @@ namespace StackSurge.UI
         {
             bool isPlayer = entry.IsCurrentPlayer;
             _playerId = entry.PlayerId;
+            _playerName = entry.PlayerName ?? "";
+            IsCurrentPlayer = isPlayer;
             _onAddFriend = onAddFriend;
 
             if (_background != null)
@@ -91,6 +102,49 @@ namespace StackSurge.UI
             if (!animate) return; // redrawn with fresher data in place; popping in again would read as a flicker
             transform.localScale = Vector3.one * 0.88f;
             transform.DOScale(1f, 0.28f).SetEase(Ease.OutBack).SetDelay(delayIndex * 0.055f).SetUpdate(true);
+        }
+
+        /// <summary>
+        /// Shows the badge the player chose ("chain:3") between the rank and the name; "" or an unknown value shows none.
+        /// With reserveSlot the name starts after the badge's space even without a badge, so names in a list that has
+        /// badges line up. Tapping the badge calls onTapped with the badge and the player's name.
+        /// </summary>
+        public void SetBadge(string badge, Action<string, string> onTapped, bool reserveSlot)
+        {
+            _onBadgeTapped = onTapped;
+            _badgeValue = badge ?? "";
+            if (_nameText == null) return;
+
+            var name = _nameText.rectTransform;
+            if (float.IsNaN(_nameLeft)) _nameLeft = name.offsetMin.x;
+            Sprite sprite = BadgeArt.ForBadge(_badgeValue);
+
+            if (sprite == null)
+            {
+                if (_badge != null) _badge.gameObject.SetActive(false);
+                name.offsetMin = new Vector2(_nameLeft + (reserveSlot ? BadgeSize + BadgeGap : 0f), name.offsetMin.y);
+                return;
+            }
+
+            if (_badge == null)
+            {
+                var go = new GameObject("Badge", typeof(RectTransform));
+                go.transform.SetParent(transform, false);
+                var rt = (RectTransform)go.transform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0f, 0.5f);
+                rt.pivot = new Vector2(0f, 0.5f);
+                rt.anchoredPosition = new Vector2(_nameLeft, 0f);
+                rt.sizeDelta = new Vector2(BadgeSize, BadgeSize);
+                _badge = go.AddComponent<Image>();
+                _badge.preserveAspect = true;
+                var button = go.AddComponent<Button>();
+                button.transition = Selectable.Transition.None;
+                button.onClick.AddListener(() => _onBadgeTapped?.Invoke(_badgeValue, _playerName));
+            }
+
+            _badge.sprite = sprite;
+            _badge.gameObject.SetActive(true);
+            name.offsetMin = new Vector2(_nameLeft + BadgeSize + BadgeGap, name.offsetMin.y);
         }
 
         /// <summary>Applies a relationship that changed after the row was shown (friend list refreshed late).</summary>

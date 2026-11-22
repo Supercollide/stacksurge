@@ -5,6 +5,7 @@ using StackSurge.Core;
 using StackSurge.Meta;
 using StackSurge.Settings;
 using StackSurge.UI;
+using Unity.Services.Authentication;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -29,6 +30,8 @@ namespace StackSurge
         ChallengeProvider _provider;
         LeaderboardService _leaderboardService;
         FriendsService _friendsService;
+        AchievementService _achievements;
+        AchievementsUI _achievementsUI;
 
         TileKind _current;
         TileKind _next;
@@ -171,6 +174,7 @@ namespace StackSurge
             _view.IsRunActive = () => _playing && !_inTutorial;
             _view.GetActiveRunScore = () => _playing && !_inTutorial && _score != null ? _score.TotalScore : -1;
             _view.OnQuitRunConfirmed = QuitRunToMainMenu;
+            _view.OnChallengesOpened = RefreshChallenges;
 
             // Build the toast UI now (avoids a hitch on the first toast) and hold toasts while the player is busy.
             InAppNotificationView.EnsureInstance();
@@ -186,7 +190,7 @@ namespace StackSurge
             GameObject consentObj = new GameObject("[AnalyticsConsentUI]");
             _analyticsConsentUI = consentObj.AddComponent<AnalyticsConsentUI>();
             // A push tap that launched the app waits behind the consent prompt; open it once the player answers.
-            _analyticsConsentUI.Initialize(_save, onDecided: () => TryRoutePendingPush());
+            _analyticsConsentUI.Initialize(_save, onDecided: () => { if (!TryRoutePendingPush()) TryOfferPlayerSwitch(); });
 
             // UGS / Challenges async initialization
             _view.UpdateLoadingStatus("CONNECTING TO SERVICES...");
@@ -195,6 +199,8 @@ namespace StackSurge
 
             // Starts Unity Analytics only if the player already agreed (no-op otherwise).
             AnalyticsConsent.Apply(_save);
+
+            SetUpAchievements();
 
             _friendsService = new FriendsService(_provider, _save);
             if (_friendsManagerUI != null)
@@ -207,6 +213,11 @@ namespace StackSurge
 
             _leaderboardService = new LeaderboardService(_provider, _save, _friendsService);
             RegisterLeaderboardCallbacks();
+            if (_leaderboardManager != null)
+            {
+                _leaderboardManager.OwnBadge = () => AchievementCatalog.PublicBadge(_save.Achievements);
+                _leaderboardManager.BadgeTapped = ShowBadgeInfo;
+            }
             if (_leaderboardManager != null) _leaderboardManager.Prefetch(); // the first open already has its list
 
             _view.UpdateLoadingStatus(_provider.IsOnline ? "ONLINE" : "NO INTERNET, PLAYING OFFLINE");
@@ -234,14 +245,237 @@ namespace StackSurge
                     NotificationService.Instance?.RescheduleReminders();
                     NotificationService.Instance?.SyncPreferenceTags();
                 },
-                onSocialSettingsChanged: () => { _ = _friendsService?.PublishSocialPrefsAsync(); });
+                onSocialSettingsChanged: () => { _ = _friendsService?.PublishSocialPrefsAsync(); },
+                font: _view.UiFont,
+                playGames: _provider.PlayGames);
             _notificationSettingsUI.Closed += OnNotificationSettingsClosed;
+            SetUpPlayGames();
 
             _view.EnableStartButton();
         }
 
         private NotificationSettingsUI _notificationSettingsUI;
+
+        // ── Google Play Games: the switch-player dialog ───────────────────────
+        SwitchPlayerUI _switchPlayerUI;
+        bool _switchOfferPending;      // the Play Games account belongs to another player; ask when the menu is free
+        bool _switchOfferedThisLaunch; // found by itself, the dialog opens once per launch at most
+
+        void SetUpPlayGames()
+        {
+            var account = _provider.PlayGames;
+            _switchPlayerUI = new GameObject("[SwitchPlayerUI]").AddComponent<SwitchPlayerUI>();
+            _switchPlayerUI.Initialize(_view.UiFont);
+            account.Changed += OnPlayGamesChanged;
+            account.ChoiceRequested += OpenSwitchPlayer;
+            account.PlayerSwitched += OnPlayerSwitched;
+            account.PlayerRestored += OnPlayerRestored;
+            OnPlayGamesChanged(); // the launch check may have finished already
+            _ = RestorePlayerNameAsync(force: false); // a new install that signed in with Play Games gets its name back
+        }
+
+        void OnPlayGamesChanged()
+        {
+            var account = _provider.PlayGames;
+            if (account.State != PlayGamesAccount.LinkState.LinkedElsewhere) { _switchOfferPending = false; return; }
+            // From the Sign in button (Settings is open) the player is waiting for this; found by itself at launch,
+            // only once per launch and not after the player chose to keep this phone's player.
+            bool fromButton = _notificationSettingsUI != null && _notificationSettingsUI.IsOpen;
+            if (!fromButton && (_switchOfferedThisLaunch || account.KeptThisPlayer)) return;
+            _switchOfferPending = true;
+            TryOfferPlayerSwitch();
+        }
+
+        /// <summary>Opens the switch dialog if it's waiting and the player is on the menu with nothing else asking.</summary>
+        bool TryOfferPlayerSwitch()
+        {
+            if (!_switchOfferPending || _switchPlayerUI == null || _switchPlayerUI.IsOpen) return false;
+            if (_playing || _inTutorial || _view == null) return false;
+            if (_view.IsLoadingScreenActive || _view.IsGameOverShowing) return false;
+            if (AnalyticsConsent.NeedsPrompt(_save) || PushPermissionPromptUI.IsOpen) return false;
+            _switchOfferPending = false;
+            _switchOfferedThisLaunch = true;
+            OpenSwitchPlayer();
+            return true;
+        }
+
+        void OpenSwitchPlayer()
+        {
+            var account = _provider.PlayGames;
+            if (_switchPlayerUI == null || _switchPlayerUI.IsOpen || account.State != PlayGamesAccount.LinkState.LinkedElsewhere) return;
+
+            string name = _save.PlayerDisplayName;
+            try
+            {
+                var auth = AuthenticationService.Instance;
+                if (auth.IsSignedIn && !string.IsNullOrEmpty(auth.PlayerName)) name = auth.PlayerName;
+            }
+            catch (Exception) { /* offline start: the saved name will do */ }
+            var thisPhone = new PlayGamesAccount.PlayerSummary
+            {
+                Name = name,
+                BestScore = _save.AllTimeHigh,
+                Badge = AchievementCatalog.PublicBadge(_save.Achievements),
+            };
+            _switchPlayerUI.Show(thisPhone,
+                loadOther: () => account.PeekLinkedPlayerAsync(ReadSignedInPlayerAsync),
+                switchAsync: account.SwitchToLinkedPlayerAsync,
+                keep: account.KeepThisPlayer);
+        }
+
+        /// <summary>Name, all-time best and badge of whoever is signed in (the other player, during the look).</summary>
+        async Task<PlayGamesAccount.PlayerSummary> ReadSignedInPlayerAsync()
+        {
+            string name = null;
+            try { name = await AuthenticationService.Instance.GetPlayerNameAsync(autoGenerate: false); }
+            catch (Exception e) { Debug.LogWarning("[StackSurgeGame] Couldn't read the other player's name: " + e.Message); }
+            var entry = _leaderboardService != null ? await _leaderboardService.GetPlayerEntryAsync(LeaderboardScope.AllTime) : null;
+            return new PlayGamesAccount.PlayerSummary
+            {
+                Name = !string.IsNullOrEmpty(name) ? name : entry?.PlayerName,
+                BestScore = (int)(entry?.Score ?? 0),
+                Badge = await AchievementService.LoadSignedInPublicBadgeAsync(),
+            };
+        }
+
+        /// <summary>This phone's player is back after the look at the other one; the sign-out stopped the Friends SDK.</summary>
+        void OnPlayerRestored()
+        {
+            if (_friendsService != null) _ = _friendsService.RestartForSignedInPlayerAsync();
+        }
+
+        /// <summary>
+        /// This phone now plays as the Play Games account's player. Its name comes to the menu, friends start for it,
+        /// and this phone's progress merges in: badges (the larger numbers win), the best score on the all-time board,
+        /// and today's challenge progress.
+        /// </summary>
+        async void OnPlayerSwitched()
+        {
+            try
+            {
+                _save.PendingPlayerName = ""; // a rename this phone hadn't sent yet was for the old player
+                LocalProgress.Save(_save);
+                await RestorePlayerNameAsync(force: true);
+                if (_friendsService != null) await _friendsService.RestartForSignedInPlayerAsync();
+                if (_leaderboardService != null) await _leaderboardService.SubmitAllTimeBestAsync(_save.AllTimeHigh);
+                await _provider.SaveAsync();
+                if (_achievements != null) await _achievements.SyncAsync();
+                if (_leaderboardManager != null) _leaderboardManager.Prefetch();
+                _view.RefreshMainMenuStats();
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[StackSurgeGame] Catching up after the player switch failed: " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Takes the signed-in player's name for this phone ("Addi#3310" shows as "Addi"). With <paramref name="force"/>
+        /// (after a switch) always; otherwise only when this phone has no name and is linked to Play Games, which is a
+        /// new install that got its player back. A switched-to player without a name gets this phone's.
+        /// </summary>
+        async Task RestorePlayerNameAsync(bool force)
+        {
+            if (!_provider.IsOnline) return;
+            if (!force && (!string.IsNullOrEmpty(_save.PlayerDisplayName) || _provider.PlayGames.State != PlayGamesAccount.LinkState.SignedIn)) return;
+
+            string name;
+            try { name = await AuthenticationService.Instance.GetPlayerNameAsync(autoGenerate: false); }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[StackSurgeGame] Couldn't read the player name: " + e.Message);
+                return;
+            }
+            if (string.IsNullOrEmpty(name))
+            {
+                if (force && !string.IsNullOrEmpty(_save.PlayerDisplayName) && _leaderboardService != null)
+                    await _leaderboardService.SetPlayerNameAsync(_save.PlayerDisplayName);
+                return;
+            }
+            int hash = name.LastIndexOf('#');
+            _save.PlayerDisplayName = hash > 0 ? name.Substring(0, hash) : name;
+            LocalProgress.Save(_save);
+            _view.RefreshMainMenuStats();
+        }
         private AnalyticsConsentUI _analyticsConsentUI;
+
+        // ── Achievements ─────────────────────────────────────────────────────
+        void SetUpAchievements()
+        {
+            _achievements = new AchievementService(_save, _provider);
+            _achievements.PublicBadgeChanged += OnPublicBadgeChanged;
+            _provider.AllChallengesDone += day => AnnounceBadges(_achievements.RecordAllChallengesDone(day));
+
+            _achievementsUI = new GameObject("[AchievementsUI]").AddComponent<AchievementsUI>();
+            _achievementsUI.Initialize(_achievements, _view.UiFont);
+            _view.OnAchievementsTriggered = OpenAchievements;
+            _view.GetProfileBadge = () => AchievementCatalog.PublicBadge(_save.Achievements);
+
+            // Best score and streak from before achievements existed can already earn badges; the toast waits for the menu.
+            AnnounceBadges(_achievements.CheckNewTiers());
+            _ = SyncAchievementsAsync();
+        }
+
+        async Task SyncAchievementsAsync()
+        {
+            await _achievements.SyncAsync(); // a reinstall gets its badges back here
+            if (this == null) return;
+            AnnounceBadges(_achievements.CloudMergeEarned);
+            _view.RefreshMainMenuStats();
+        }
+
+        void OnPublicBadgeChanged()
+        {
+            if (_friendsService != null) _ = _friendsService.PublishSocialPrefsAsync();
+            if (_view != null) _view.RefreshMainMenuStats();
+        }
+
+        public void OpenAchievements()
+        {
+            if (_achievementsUI == null || _achievementsUI.IsOpen) return;
+            if (_inTutorial) return;
+            _achievementsUI.Show();
+        }
+
+        /// <summary>
+        /// A toast for badges just earned. Toasts wait while a run is being played, so these show on the game-over
+        /// screen or the menu. Tapping one opens Achievements.
+        /// </summary>
+        void AnnounceBadges(System.Collections.Generic.List<(AchievementDef def, int tier)> earned)
+        {
+            if (earned == null || earned.Count == 0) return;
+            var (def, tier) = earned[0];
+            Sprite icon = BadgeArt.Emblem(def.Key, tier);
+
+            if (earned.Count == 1)
+            {
+                InAppNotificationView.Show($"New badge: {def.Name}",
+                    $"Tier {tier} of {AchievementCatalog.Tiers}, for {def.GoalText(tier)}. Tap to see your badges.",
+                    NotificationType.Info, OpenAchievements, icon);
+                return;
+            }
+
+            // Two lines fit in the toast: name up to three, then "and N more".
+            int named = earned.Count > 3 ? 2 : earned.Count;
+            var names = new System.Text.StringBuilder();
+            for (int i = 0; i < named; i++)
+            {
+                if (i > 0) names.Append(i == named - 1 && named == earned.Count ? " and " : ", ");
+                names.Append(earned[i].def.Name);
+            }
+            if (named < earned.Count) names.Append($" and {earned.Count - named} more");
+            InAppNotificationView.Show($"{earned.Count} new badges", $"{names}. Tap to see them.",
+                NotificationType.Info, OpenAchievements, icon);
+        }
+
+        /// <summary>A badge on the leaderboard was tapped: say what it's for.</summary>
+        void ShowBadgeInfo(string badge, string playerName)
+        {
+            if (!AchievementCatalog.TryParseBadge(badge, out var def, out int tier)) return;
+            string who = string.IsNullOrEmpty(playerName) ? "This player" : playerName;
+            InAppNotificationView.Show($"{def.Name}, tier {tier} of {AchievementCatalog.Tiers}",
+                $"{who} earned it for {def.GoalText(tier)}.", NotificationType.Info, null, BadgeArt.Emblem(def.Key, tier));
+        }
 
         /// <summary>
         /// Single place that wires every leaderboard callback. Called at bootstrap and again after a rename,
@@ -280,12 +514,28 @@ namespace StackSurge
         void OnPendingRouteAvailable() => TryRoutePendingPush();
 
         /// <summary>
+        /// Brings today's challenges up to date between runs: a new UTC day's set at once, and Remote Config edits at
+        /// most every 30 minutes. A run keeps the set it started with (BeginRun moves to a new day itself).
+        /// </summary>
+        async void RefreshChallenges()
+        {
+            if (_provider == null || _playing) return;
+            bool changed;
+            try { changed = await _provider.RefreshAsync(); }
+            catch (Exception e) { Debug.LogWarning("[StackSurgeGame] Challenge refresh failed: " + e.Message); return; }
+            if (!changed || this == null) return;
+            _view.RefreshChallengesIfOpen();
+            _view.RefreshMainMenuStats();
+        }
+
+        /// <summary>
         /// The game started offline and a retry has signed in. Friends and the leaderboard catch up on their own
         /// (they listen to WentOnline too); this starts the rest of what launch skipped.
         /// </summary>
         void OnWentOnline()
         {
             AnalyticsConsent.Apply(_save); // only when the player agreed; a no-op otherwise
+            _ = RestorePlayerNameAsync(force: false); // a reconnect can sign in with Play Games on a new install
             NotificationService.Instance?.BindSignedInPlayer();
             if (_leaderboardManager != null)
             {
@@ -380,6 +630,7 @@ namespace StackSurge
                 if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Online);
                 // If the game started offline, back in the foreground is a good moment to try signing in again.
                 if (_provider != null) _ = _provider.TryReconnectAsync(userAction: false);
+                RefreshChallenges(); // a new day's set, or Remote Config edits, without a restart
             }
         }
 
@@ -407,6 +658,8 @@ namespace StackSurge
                 if (keyboard.hKey.wasPressedThisFrame && _view != null) _view.ToggleHelp();
             }
 #endif
+
+            if (_playing && !_inTutorial && _score != null) UpdateChainMeter();
 
             if (!_playing || _resolvingMatches || _inTutorial) return;
 
@@ -445,7 +698,9 @@ namespace StackSurge
             if (_view == null) return;
 
             if (PushPermissionPromptUI.IsOpen) { PushPermissionPromptUI.Dismiss(); return; } // top-most modal
+            if (_switchPlayerUI != null && _switchPlayerUI.IsOpen) { _switchPlayerUI.Back(); return; }
             if (_notificationSettingsUI != null && _notificationSettingsUI.IsOpen) { _notificationSettingsUI.Hide(); return; }
+            if (_achievementsUI != null && _achievementsUI.IsOpen) { _achievementsUI.Back(); return; }
             if (_view.IsConfirmDialogOpen) { _view.HideConfirmDialog(); return; }
             if (_friendsManagerUI != null && _friendsManagerUI.IsOpen) { _friendsManagerUI.ClosePanel(); return; }
             if (_leaderboardManager != null && _leaderboardManager.IsOpen) { _leaderboardManager.HideLeaderboard(); return; }
@@ -672,8 +927,7 @@ namespace StackSurge
 
             if (emptyAfter)
             {
-                _slowFillBuff = _settings.SlowFillBuffSeconds;
-                _view.ShowSlowRiseBadge(_settings.SlowFillBuffSeconds);
+                _slowFillBuff = _settings.SlowFillBuffSeconds; // the rise line and bar show it (UpdateHud)
             }
 
             _challenges.TickRun(CurrentRunStats(), runEnded: false);
@@ -701,6 +955,7 @@ namespace StackSurge
             PerfectClears = _runPerfects,
             Bombs = _runBombs,
             Match5s = _runMatch5s,
+            LongestChain = _score.BestChain,
         };
 
         bool HasEntireRowInMatch(System.Collections.Generic.HashSet<(int r, int c)> matchSet)
@@ -841,10 +1096,23 @@ namespace StackSurge
                 Challenges = GetChallengeDisplayData(),
                 AllDoneBonusGranted = _provider != null && _provider.AllDoneBonusGranted,
                 AllDoneBonusThisRun = _provider != null && _provider.AllDoneBonusGranted && !_allDoneBonusAtRunStart,
+                ChallengeThisGame = ThisGameValues(),
             });
         }
 
         bool _streakRewardThisRun;
+
+        /// <summary>What the run that just ended reached for each of today's challenges, on its own.</summary>
+        int[] ThisGameValues()
+        {
+            var defs = _provider?.ActiveChallenges;
+            if (defs == null) return null;
+            var run = CurrentRunStats();
+            var values = new int[defs.Length];
+            for (int i = 0; i < defs.Length; i++)
+                values[i] = defs[i] == null ? 0 : ChallengeTracker.RunValue(defs[i].Type, run, runEnded: true);
+            return values;
+        }
 
         /// <summary>
         /// Saves the finished run: challenges, best scores, streak, cloud save and leaderboard submission.
@@ -858,6 +1126,11 @@ namespace StackSurge
             int previousBest = _save.AllTimeHigh; // capture before RegisterRunEnd updates it
             LocalProgress.RegisterRunEnd(_score.TotalScore, _save);
             _streakRewardThisRun = StreakReward.TryGrant(_save, _provider);
+            if (_achievements != null)
+            {
+                AnnounceBadges(_achievements.RecordRun(CurrentRunStats()));
+                _ = _achievements.SaveAsync();
+            }
             NotificationService.Instance?.RecordRunCompleted(); // learns the usual play hour for reminder timing
 
             if (_provider != null)
@@ -944,7 +1217,29 @@ namespace StackSurge
                 ? (_settings.InitialRiseGraceSeconds > 0f ? _timeAlive / _settings.InitialRiseGraceSeconds : 1f)
                 : (interval > 0f ? _riseAccumulator / interval : 0f);
 
-            _view.UpdateHud(_score.TotalScore, _timeAlive, inGrace ? graceLeft : nextRise, riseProgress, inGrace, _current, _next);
+            _view.UpdateHud(_score.TotalScore, _timeAlive, inGrace ? graceLeft : nextRise, riseProgress, inGrace, _current, _next,
+                slowSecondsLeft: Mathf.Max(0f, _slowFillBuff));
+        }
+
+        /// <summary>
+        /// Chain counter above the board. Runs every frame, clears included: the 3 seconds to the next clear keep
+        /// counting while tiles pop (the combo uses game time, not the paused-during-clears run clock).
+        /// </summary>
+        void UpdateChainMeter()
+        {
+            float window = Mathf.Max(0.01f, _score.ComboWindow);
+            _view.UpdateChain(_score.CurrentChain, _score.ChainTimeLeft(Time.time) / window, TodaysChainTarget());
+        }
+
+        /// <summary>Target of today's chain challenge while it's still open, else 0 (the counter then shows no target).</summary>
+        int TodaysChainTarget()
+        {
+            var defs = _provider?.ActiveChallenges;
+            if (defs == null) return 0;
+            for (int i = 0; i < defs.Length; i++)
+                if (defs[i] != null && defs[i].Type == ChallengeType.ChainInRun && i < _provider.CompletionBits.Length && _provider.CompletionBits[i] == 0)
+                    return defs[i].TargetValue;
+            return 0;
         }
 
         ChallengeDisplayData[] GetChallengeDisplayData()
@@ -977,7 +1272,7 @@ namespace StackSurge
             if (_analyticsConsentUI != null) _analyticsConsentUI.ShowIfNeeded();
 
             // A push or reminder tap that launched the app; wait if the consent prompt is up.
-            if (!AnalyticsConsent.NeedsPrompt(_save)) TryRoutePendingPush();
+            if (!AnalyticsConsent.NeedsPrompt(_save) && !TryRoutePendingPush()) TryOfferPlayerSwitch();
         }
 
         public void GoToMainMenuFromGameOver()
@@ -988,10 +1283,12 @@ namespace StackSurge
             _view.SetInstructionalTextActive(false);
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
             _view.ShowMainMenu(true);
+            RefreshChallenges();
 
             // Back on the menu after a run: open anything tapped meanwhile, otherwise this is the moment for the
             // soft notification prompt (it checks permission, consent, ask count and spacing itself).
-            if (!TryRoutePendingPush()) PushPermissionPromptUI.ShowIfEligible(_save, onClosed: () => TryRoutePendingPush());
+            if (!TryRoutePendingPush() && !TryOfferPlayerSwitch())
+                PushPermissionPromptUI.ShowIfEligible(_save, onClosed: () => TryRoutePendingPush());
         }
 
         async void OnPlayerNameChangedFromMainMenu(string newName)

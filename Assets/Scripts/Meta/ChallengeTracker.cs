@@ -12,6 +12,7 @@ namespace StackSurge.Meta
         public int PerfectClears;  // times the whole board was emptied
         public int Bombs;          // bombs set off
         public int Match5s;        // matches of 5 or more tiles in one line
+        public int LongestChain;   // most clears in a row, each within the combo window of the last
     }
 
     /// <summary>
@@ -40,6 +41,21 @@ namespace StackSurge.Meta
         /// Called each match-resolve wave and at run end to update challenge progress.
         /// </summary>
         /// <param name="runEnded">True only for the final call, which is when "play N runs" counts the run.</param>
+        /// <summary>What this run alone counts toward a challenge of the given type (no earlier runs added).</summary>
+        public static int RunValue(ChallengeType type, RunStats run, bool runEnded) => type switch
+        {
+            ChallengeType.ScoreInRun or ChallengeType.ScoreToday => run.Score,
+            ChallengeType.SurviveSeconds => (int)run.SecondsAlive,
+            ChallengeType.MaxComboMultiplier => run.BestComboMultiplier,
+            ChallengeType.RowsClearedInRun or ChallengeType.RowsClearedToday => run.RowsCleared,
+            ChallengeType.PerfectClearsInRun => run.PerfectClears,
+            ChallengeType.BombsInRun => run.Bombs,
+            ChallengeType.Match5InRun => run.Match5s,
+            ChallengeType.ChainInRun => run.LongestChain,
+            ChallengeType.RunsToday => runEnded ? 1 : 0,
+            _ => 0
+        };
+
         public void TickRun(RunStats run, bool runEnded)
         {
             if (_provider == null) return;
@@ -52,18 +68,7 @@ namespace StackSurge.Meta
                 var d = defs[i];
                 if (d == null) continue;
 
-                int value = d.Type switch
-                {
-                    ChallengeType.ScoreInRun or ChallengeType.ScoreToday => run.Score,
-                    ChallengeType.SurviveSeconds => (int)run.SecondsAlive,
-                    ChallengeType.MaxComboMultiplier => run.BestComboMultiplier,
-                    ChallengeType.RowsClearedInRun or ChallengeType.RowsClearedToday => run.RowsCleared,
-                    ChallengeType.PerfectClearsInRun => run.PerfectClears,
-                    ChallengeType.BombsInRun => run.Bombs,
-                    ChallengeType.Match5InRun => run.Match5s,
-                    ChallengeType.RunsToday => runEnded ? 1 : 0,
-                    _ => 0
-                };
+                int value = RunValue(d.Type, run, runEnded);
 
                 if (d.Type.IsDayTotal())
                     value += i < _dayTotalsAtRunStart.Length ? _dayTotalsAtRunStart[i] : 0;

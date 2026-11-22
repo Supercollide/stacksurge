@@ -32,6 +32,7 @@ namespace StackSurge.UI
             public string Message;
             public NotificationType Type;
             public Action OnTap;
+            public Sprite Icon; // shown in full colour in place of the round type marker (e.g. a new badge)
         }
 
         private const float DisplaySeconds = 3.5f;
@@ -211,7 +212,8 @@ namespace StackSurge.UI
             tapButton.onClick.AddListener(OnToastTapped);
         }
 
-        public static void Show(string title, string message, NotificationType type = NotificationType.Info, Action onTap = null)
+        public static void Show(string title, string message, NotificationType type = NotificationType.Info, Action onTap = null,
+            Sprite icon = null)
         {
             EnsureInstance();
 
@@ -220,7 +222,7 @@ namespace StackSurge.UI
             string cleanMessage = StripUnsupportedGlyphs(message);
             if (cleanTitle.Length == 0 && cleanMessage.Length == 0) return;
 
-            _instance.Enqueue(new Toast { Title = cleanTitle, Message = cleanMessage, Type = type, OnTap = onTap });
+            _instance.Enqueue(new Toast { Title = cleanTitle, Message = cleanMessage, Type = type, OnTap = onTap, Icon = icon });
         }
 
         private void Enqueue(Toast toast)
@@ -358,6 +360,10 @@ namespace StackSurge.UI
                     _iconImage.color = new Color(0.35f, 0.65f, 1.00f, 1f);
                     break;
             }
+
+            _iconImage.sprite = toast.Icon != null ? toast.Icon : UiSprites.Circle;
+            if (toast.Icon != null) _iconImage.color = Color.white;
+            _iconImage.rectTransform.localScale = Vector3.one * (toast.Icon != null ? 1.3f : 1f); // badges have empty margins
         }
 
         private void OnToastTapped()

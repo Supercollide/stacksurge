@@ -46,6 +46,16 @@ namespace StackSurge.UI
             if (_activityText != null && _activityText.fontSize < MinActivityFontSize)
                 _activityText.fontSize = MinActivityFontSize;
 
+            // A long name gets "…" instead of pushing the buttons out of the row: the name column takes only the
+            // space the badge and buttons leave (it used to ask for the whole name's width).
+            if (_nameText != null)
+            {
+                _nameText.textWrappingMode = TextWrappingModes.NoWrap;
+                _nameText.overflowMode = TextOverflowModes.Ellipsis;
+                if (_nameText.transform.parent != null && _nameText.transform.parent.TryGetComponent(out LayoutElement info))
+                    info.preferredWidth = 0f;
+            }
+
             FitActionButton(_acceptButton);
             FitActionButton(_declineButton);
             FitActionButton(_removeButton);
@@ -205,6 +215,41 @@ namespace StackSurge.UI
             }
 
             AnimateIn(delayIndex);
+        }
+
+        private const float BadgeSize = 48f; // the row's inner height (64 minus its padding)
+        private Image _badge;
+
+        /// <summary>
+        /// Shows the badge the player chose, after the status bar. With no badge and reserveSlot, the space stays empty
+        /// so names line up with rows that have one.
+        /// </summary>
+        public void SetBadge(Sprite sprite, bool reserveSlot)
+        {
+            if (sprite == null && !reserveSlot)
+            {
+                if (_badge != null) _badge.gameObject.SetActive(false);
+                return;
+            }
+
+            if (_badge == null)
+            {
+                var go = new GameObject("Badge", typeof(RectTransform));
+                go.transform.SetParent(transform, false);
+                bool dotHere = _statusIndicatorImage != null && _statusIndicatorImage.transform.parent == transform;
+                go.transform.SetSiblingIndex(dotHere ? _statusIndicatorImage.transform.GetSiblingIndex() + 1 : 0);
+                var layout = go.AddComponent<LayoutElement>();
+                layout.minWidth = layout.preferredWidth = BadgeSize;
+                layout.minHeight = layout.preferredHeight = BadgeSize;
+                layout.flexibleWidth = 0;
+                _badge = go.AddComponent<Image>();
+                _badge.preserveAspect = true;
+                _badge.raycastTarget = false;
+            }
+
+            _badge.sprite = sprite;
+            _badge.color = sprite != null ? Color.white : Color.clear;
+            _badge.gameObject.SetActive(true);
         }
 
         private static void SetButtonText(Button btn, string label)

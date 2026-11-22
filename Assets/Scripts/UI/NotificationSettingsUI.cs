@@ -45,12 +45,19 @@ namespace StackSurge.UI
 
         private readonly List<PillSwitch> _pills = new List<PillSwitch>();
 
+        // Google Play Games row (Android, once Play Games is set up; hidden otherwise)
+        private PlayGamesAccount _playGames;
+        private GameObject _accountRow;
+        private TextMeshProUGUI _accountSubtitle;
+        private Button _accountButton;
+        private Image _accountButtonBg;
+        private TextMeshProUGUI _accountButtonLabel;
+
         // Layout, in reference units of the 1080x1920 canvas
         private const float DialogWidth = 880f;
         private const float DialogPadding = 36f;
         private const float SectionSpacing = 20f;
         private const float HeaderHeight = 58f;
-        private const float DescriptionHeight = 76f;
         private const float BannerHeight = 150f;
         private const float RowHeight = 124f;
         private const float RowSpacing = 12f;
@@ -70,14 +77,22 @@ namespace StackSurge.UI
 
         /// <param name="onSettingsChanged">Called after any notification toggle changes (reschedule reminders, sync tags).</param>
         /// <param name="onSocialSettingsChanged">Called after a social toggle changes (publish public prefs).</param>
-        public void Initialize(SaveData save, Action onSettingsChanged = null, Action onSocialSettingsChanged = null)
+        /// <param name="font">The font the rest of the UI uses (Montserrat Bold); null keeps the TextMesh Pro default.</param>
+        /// <param name="playGames">The Google Play Games link; null or unavailable hides its row.</param>
+        public void Initialize(SaveData save, Action onSettingsChanged = null, Action onSocialSettingsChanged = null,
+            TMP_FontAsset font = null, PlayGamesAccount playGames = null)
         {
             _save = save;
             _onSettingsChanged = onSettingsChanged;
             _onSocialSettingsChanged = onSocialSettingsChanged;
+            _playGames = playGames;
 
             BuildUIProgrammatically();
+            if (font != null)
+                foreach (var text in _overlayObj.GetComponentsInChildren<TMP_Text>(true)) text.font = font;
             UpdateToggleStates();
+            RefreshAccountRow();
+            if (_playGames != null) _playGames.Changed += OnPlayGamesChanged;
         }
 
         private void BuildUIProgrammatically()
@@ -152,22 +167,12 @@ namespace StackSurge.UI
             titleText.color = Color.white;
             SetFixedHeight(titleObj, HeaderHeight);
 
-            // Description
-            GameObject descObj = new GameObject("Description");
-            descObj.transform.SetParent(layoutObj.transform, false);
-            TextMeshProUGUI descText = descObj.AddComponent<TextMeshProUGUI>();
-            descText.text = "Sound, accessibility, alerts, who can add you and what data you share:";
-            descText.fontSize = 28;
-            descText.alignment = TextAlignmentOptions.Center;
-            descText.color = new Color(0.75f, 0.80f, 0.90f);
-            descText.textWrappingMode = TextWrappingModes.Normal;
-            SetFixedHeight(descObj, DescriptionHeight);
-
             // "Notifications are off" banner (device only; refreshed on Show / focus / permission change)
             BuildPermissionBanner(layoutObj.transform);
 
             // Toggles live in a scroll view so the dialog still fits short screens.
             Transform rows = BuildScrollView(layoutObj.transform);
+            CreateAccountRow(rows);
             _sfxVolumeSlider = CreateSliderRow(rows, "Sound Effects", "Volume of drops, clears, bombs and other game sounds");
             _vibrationToggle = CreateToggleRow(rows, "Vibration", "Short haptic taps on clears, bombs and blocked moves");
             _shapesToggle = CreateToggleRow(rows, "Tile Shapes", "A different shape on each tile colour (colour-blind friendly)");
@@ -354,6 +359,119 @@ namespace StackSurge.UI
             AddText(textCol.transform, "Subtitle", subtitleText, 25, FontStyles.Normal, new Color(0.70f, 0.75f, 0.85f));
 
             return CreatePillSwitch(row.transform);
+        }
+
+        /// <summary>"Google Play Games": who the player is signed in as, or a button that signs in and links the account.</summary>
+        private void CreateAccountRow(Transform parent)
+        {
+            _accountRow = new GameObject("AccountRow");
+            _accountRow.transform.SetParent(parent, false);
+            _accountRow.AddComponent<RectTransform>();
+            SetFixedHeight(_accountRow, RowHeight);
+
+            HorizontalLayoutGroup hlayout = _accountRow.AddComponent<HorizontalLayoutGroup>();
+            hlayout.spacing = 20;
+            hlayout.childAlignment = TextAnchor.MiddleLeft;
+            hlayout.childControlWidth = true;
+            hlayout.childControlHeight = true;
+            hlayout.childForceExpandWidth = false;
+            hlayout.childForceExpandHeight = false;
+
+            GameObject textCol = new GameObject("TextCol");
+            textCol.transform.SetParent(_accountRow.transform, false);
+            textCol.AddComponent<RectTransform>();
+            textCol.AddComponent<LayoutElement>().flexibleWidth = 1;
+            VerticalLayoutGroup vlayout = textCol.AddComponent<VerticalLayoutGroup>();
+            vlayout.spacing = 4;
+            vlayout.childAlignment = TextAnchor.MiddleLeft;
+            vlayout.childControlWidth = true;
+            vlayout.childControlHeight = true;
+            vlayout.childForceExpandHeight = false;
+
+            AddText(textCol.transform, "Title", "Google Play Games", 32, FontStyles.Bold, Color.white);
+            AddText(textCol.transform, "Subtitle", "", 25, FontStyles.Normal, new Color(0.70f, 0.75f, 0.85f));
+            _accountSubtitle = textCol.transform.Find("Subtitle").GetComponent<TextMeshProUGUI>();
+            _accountSubtitle.richText = false; // it shows the player's Play Games name
+
+            GameObject btnObj = new GameObject("SignInButton");
+            btnObj.transform.SetParent(_accountRow.transform, false);
+            btnObj.AddComponent<RectTransform>();
+            LayoutElement btnLayout = btnObj.AddComponent<LayoutElement>();
+            btnLayout.minWidth = btnLayout.preferredWidth = 214;
+            btnLayout.minHeight = btnLayout.preferredHeight = 72;
+            _accountButtonBg = btnObj.AddComponent<Image>();
+            _accountButtonBg.color = UiSkin.Primary;
+            UiSprites.ApplyRounded(_accountButtonBg, 16f);
+            _accountButton = btnObj.AddComponent<Button>();
+            _accountButton.targetGraphic = _accountButtonBg;
+            _accountButton.onClick.AddListener(OnAccountButtonClicked);
+            AddStretchedLabel(btnObj.transform, "Sign in", 30);
+            _accountButtonLabel = btnObj.transform.Find("Text").GetComponent<TextMeshProUGUI>();
+        }
+
+        private void OnAccountButtonClicked()
+        {
+            if (_playGames == null) return;
+            SfxPlayer.Play(Sfx.UiTap);
+            if (_playGames.State == PlayGamesAccount.LinkState.LinkedElsewhere) _playGames.RequestChoice();
+            else _ = _playGames.SignInFromButtonAsync();
+        }
+
+        private void OnPlayGamesChanged()
+        {
+            if (this == null) return;
+            RefreshAccountRow();
+        }
+
+        private void RefreshAccountRow()
+        {
+            if (_accountRow == null) return;
+            var state = _playGames?.State ?? PlayGamesAccount.LinkState.Unavailable;
+            bool shown = state != PlayGamesAccount.LinkState.Unavailable;
+            if (_accountRow.activeSelf != shown)
+            {
+                _accountRow.SetActive(shown);
+                ResizeDialog();
+            }
+            if (!shown) return;
+
+            const string Pitch = "Sign in to keep your progress if you change phones or reinstall";
+            string subtitle;
+            string button = null; // null hides the button
+            bool busy = false;
+            switch (state)
+            {
+                case PlayGamesAccount.LinkState.SignedIn:
+                    string name = _playGames.DisplayName;
+                    subtitle = string.IsNullOrEmpty(name)
+                        ? "Your progress is saved to your Google Play Games account"
+                        : $"Signed in as {name}. Your progress is saved to this Google account";
+                    break;
+                case PlayGamesAccount.LinkState.SigningIn:
+                    subtitle = Pitch;
+                    button = "Signing in";
+                    busy = true;
+                    break;
+                case PlayGamesAccount.LinkState.Failed:
+                    subtitle = "Couldn't sign in. Check your connection and try again";
+                    button = "Try again";
+                    break;
+                case PlayGamesAccount.LinkState.LinkedElsewhere:
+                    subtitle = "This Google account already has a different Stack Surge player";
+                    button = "Choose"; // opens the switch dialog
+                    break;
+                default:
+                    subtitle = Pitch;
+                    button = "Sign in";
+                    break;
+            }
+
+            _accountSubtitle.text = subtitle;
+            _accountButton.gameObject.SetActive(button != null);
+            if (button == null) return;
+            _accountButtonLabel.text = button;
+            _accountButton.interactable = !busy;
+            _accountButtonBg.color = busy ? UiSkin.SurfaceRaised : UiSkin.Primary;
         }
 
         private const float SliderWidth = 250f;
@@ -574,7 +692,14 @@ namespace StackSurge.UI
             le.flexibleHeight = 0;
         }
 
-        private static float RowsHeight => RowCount * RowHeight + (RowCount - 1) * RowSpacing;
+        private float RowsHeight
+        {
+            get
+            {
+                int count = RowCount + (_accountRow != null && _accountRow.activeSelf ? 1 : 0);
+                return count * RowHeight + (count - 1) * RowSpacing;
+            }
+        }
 
         /// <summary>Sizes the dialog to its content, capped to the visible (safe-area) height; the toggle list scrolls if needed.</summary>
         private void ResizeDialog()
@@ -582,8 +707,8 @@ namespace StackSurge.UI
             if (_dialogPanel == null) return;
 
             bool bannerShown = _permissionBanner != null && _permissionBanner.activeSelf;
-            float desired = 2 * DialogPadding + HeaderHeight + DescriptionHeight + RowsHeight + CloseButtonHeight
-                            + 3 * SectionSpacing
+            float desired = 2 * DialogPadding + HeaderHeight + RowsHeight + CloseButtonHeight
+                            + 2 * SectionSpacing
                             + (bannerShown ? BannerHeight + SectionSpacing : 0f);
 
             Rect area = _overlayRect != null ? _overlayRect.rect : new Rect(0, 0, 1080, 1920);
@@ -704,6 +829,7 @@ namespace StackSurge.UI
         {
             if (_permissionSource != null) _permissionSource.PushPermissionChanged -= OnPushPermissionChanged;
             _permissionSource = null;
+            if (_playGames != null) _playGames.Changed -= OnPlayGamesChanged;
         }
 
         // ── Show / Hide ─────────────────────────────────────────────────────
@@ -713,6 +839,7 @@ namespace StackSurge.UI
 
             UpdateToggleStates();
             SubscribeToPermissionChanges();
+            RefreshAccountRow();
 
             IsOpen = true;
             _overlayObj.SetActive(true);

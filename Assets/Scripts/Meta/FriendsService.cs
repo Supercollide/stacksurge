@@ -73,6 +73,8 @@ namespace StackSurge.Meta
     {
         public bool allowFriendRequests = true;
         public bool notifyFriendActivity = true;
+        /// <summary>The badge on this player's profile, "achievement:tier" (e.g. "chain:3"); "" for none.</summary>
+        public string badge = "";
     }
 
     /// <summary>
@@ -180,6 +182,7 @@ namespace StackSurge.Meta
                     _isInitialized = true;
                     _lastRefreshUtc = DateTime.UtcNow;
                     SubscribeToServiceEvents();
+                    WatchSignOut();
                     Debug.Log("[FriendsService] UGS Friends Service initialized successfully.");
 
                     _ = PublishPresenceAsync(PresenceStatus.Online);
@@ -263,6 +266,45 @@ namespace StackSurge.Meta
         }
 
         // ── Realtime events ─────────────────────────────────────────────────
+        private bool _watchingSignOut;
+
+        /// <summary>Signing out clears the Friends SDK, so the next sign-in (maybe another player) starts it again.</summary>
+        private void WatchSignOut()
+        {
+            if (_watchingSignOut) return;
+            _watchingSignOut = true;
+            AuthenticationService.Instance.SignedOut += OnSignedOut;
+        }
+
+        private void OnSignedOut()
+        {
+            if (!_isInitialized) return;
+            _isInitialized = false;
+            try
+            {
+                UgsFriendsService.Instance.RelationshipAdded -= OnRelationshipAdded;
+                UgsFriendsService.Instance.RelationshipDeleted -= OnRelationshipDeleted;
+                UgsFriendsService.Instance.PresenceUpdated -= OnPresenceUpdated;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[FriendsService] Failed to unsubscribe from UGS Friends events: " + e.Message);
+            }
+            _prefsCache.Clear();
+            _locallyHandledMembers.Clear();
+        }
+
+        /// <summary>
+        /// Another player is signed in now (a Play Games switch, or this phone's player back after a look at the
+        /// other one): starts the Friends SDK for them and lets open screens reload.
+        /// </summary>
+        public async Task RestartForSignedInPlayerAsync()
+        {
+            OnSignedOut();
+            await EnsureInitializedAsync();
+            OnFriendsUpdated?.Invoke();
+        }
+
         private void SubscribeToServiceEvents()
         {
             try
@@ -817,11 +859,12 @@ namespace StackSurge.Meta
                 var prefs = new SocialPrefs
                 {
                     allowFriendRequests = _save.AllowFriendRequests,
-                    notifyFriendActivity = _save.NotifyFriendActivity
+                    notifyFriendActivity = _save.NotifyFriendActivity,
+                    badge = AchievementCatalog.PublicBadge(_save.Achievements)
                 };
                 var data = new Dictionary<string, object> { { SocialPrefsCloudSaveKey, prefs } };
                 await CloudSaveService.Instance.Data.Player.SaveAsync(data, new SaveOptions(new PublicWriteAccessClassOptions()));
-                Debug.Log($"[FriendsService] Social prefs published (allowRequests={prefs.allowFriendRequests}, notifyFriends={prefs.notifyFriendActivity}).");
+                Debug.Log($"[FriendsService] Social prefs published (allowRequests={prefs.allowFriendRequests}, notifyFriends={prefs.notifyFriendActivity}, badge={prefs.badge}).");
             }
             catch (Exception e)
             {
@@ -842,7 +885,7 @@ namespace StackSurge.Meta
                 return cached.prefs;
 
             var prefs = new SocialPrefs();
-            if (!_isOnline) return prefs;
+            if (!_isOnline) return _useSampleData ? SamplePrefs(playerId) : prefs;
 
             try
             {
@@ -873,6 +916,17 @@ namespace StackSurge.Meta
             var map = new Dictionary<string, SocialPrefs>();
             for (int i = 0; i < ids.Count; i++) map[ids[i]] = results[i];
             return map;
+        }
+
+        /// <summary>Screenshot builds offline: a badge for most sample players, picked from the id so it stays the same.</summary>
+        private static SocialPrefs SamplePrefs(string playerId)
+        {
+            int hash = 0;
+            foreach (char c in playerId) hash = unchecked(hash * 31 + c);
+            hash &= 0x7fffffff;
+            var all = AchievementCatalog.All;
+            string badge = hash % 5 == 0 ? "" : $"{all[hash % all.Length].Key}:{1 + hash / 7 % AchievementCatalog.Tiers}";
+            return new SocialPrefs { badge = badge };
         }
 
         public async Task<bool> TargetAllowsRequestsAsync(string playerId)

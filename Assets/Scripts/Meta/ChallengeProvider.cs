@@ -80,13 +80,18 @@ namespace StackSurge.Meta
             await TrySignInAsync();
 
             // Where today's challenges come from, then which ones they are.
-            if (fixedAssets != null && fixedAssets.Length > 0) _fixedSet = fixedAssets;
+            _fixedFromInspector = fixedAssets != null && fixedAssets.Length > 0;
+            if (_fixedFromInspector) _fixedSet = fixedAssets;
             else await FetchRemoteDefinitionsAsync();
             if (_fixedSet == null && _pool.Length == 0) _pool = ChallengePool.ToDefinitions(ChallengePool.BuiltIn());
             ActiveChallenges = PickFor(TodayUtc);
 
             // Load progress (cloud or local)
             await LoadProgressAsync();
+
+            // A Remote Config change during the day doesn't swap today's set while its challenges are still in the pool.
+            var kept = KeptSet(TodayUtc);
+            if (kept != null) ActiveChallenges = kept;
 
             // A new day, or a different set than the saved progress belongs to, starts fresh.
             EnsureToday();
@@ -105,6 +110,18 @@ namespace StackSurge.Meta
 
         public event Action WentOnline;
 
+        /// <summary>The Google Play Games link of the signed-in player (Android); Settings shows it.</summary>
+        public PlayGamesAccount PlayGames { get; }
+
+        public ChallengeProvider()
+        {
+            PlayGames = new PlayGamesAccount(this, signedOut: () => IsOnline = false);
+        }
+
+        /// <summary>Raised when the last of the day's challenges is completed, with the day the set belongs to
+        /// (UTC, yyyy-MM-dd). Counts toward the Daily challenges achievement.</summary>
+        public event Action<string> AllChallengesDone;
+
         async Task<bool> TrySignInAsync()
         {
             try
@@ -113,10 +130,16 @@ namespace StackSurge.Meta
                     await UnityServices.InitializeAsync();
 
                 if (!AuthenticationService.Instance.IsSignedIn)
-                    await AuthenticationService.Instance.SignInAnonymouslyAsync();
+                {
+                    // No saved session means a new install (or cleared data). If Play Games signs in by itself, its
+                    // account brings back the player it's linked to, instead of starting a new anonymous one.
+                    if (AuthenticationService.Instance.SessionTokenExists || !await PlayGames.TrySignInWithPlayGamesAsync())
+                        await AuthenticationService.Instance.SignInAnonymouslyAsync();
+                }
 
                 IsOnline = true;
                 Debug.Log("[ChallengeProvider] Signed in. PlayerID: " + AuthenticationService.Instance.PlayerId);
+                _ = PlayGames.CheckLinkAsync();
             }
             catch (Exception e)
             {
@@ -160,6 +183,7 @@ namespace StackSurge.Meta
         async Task FetchRemoteDefinitionsAsync()
         {
             if (!IsOnline) return;
+            _lastRemoteFetchUtc = DateTime.UtcNow;
             try
             {
                 RemoteConfigService.Instance.FetchCompleted += ApplyRemoteConfig;
@@ -208,6 +232,107 @@ namespace StackSurge.Meta
         }
 
         ChallengeDefinition[] PickFor(string day) => _fixedSet ?? ChallengePool.PickForDay(_pool, day);
+
+        /// <summary>
+        /// Today's saved set rebuilt from the current config, so edits to those challenges (wording, targets, rewards)
+        /// apply. Null when the save is for another day, or one of today's challenges is no longer in the config.
+        /// </summary>
+        ChallengeDefinition[] KeptSet(string today)
+        {
+            if (_save == null || _save.ChallengeSetDate != today || string.IsNullOrEmpty(_save.ChallengeSetIds)) return null;
+            var source = _fixedSet ?? _pool;
+            if (source == null || source.Length == 0) return null;
+            var ids = _save.ChallengeSetIds.Split(',');
+            var set = new ChallengeDefinition[ids.Length];
+            for (int i = 0; i < ids.Length; i++)
+            {
+                string id = ids[i];
+                set[i] = Array.Find(source, d => d != null && (string.IsNullOrEmpty(d.Id) ? d.Title : d.Id) == id);
+                if (set[i] == null) return null;
+            }
+            return set;
+        }
+
+        // ── Refresh while the app stays open ─────────────────────────
+        // Android rarely restarts a game that's only been in the background, so launch alone isn't enough.
+        static readonly TimeSpan RemoteRefreshGap = TimeSpan.FromMinutes(30);
+        DateTime _lastRemoteFetchUtc = DateTime.MinValue;
+        bool _fixedFromInspector;
+        Task<bool> _refreshTask;
+
+        /// <summary>
+        /// Called outside runs (back in the foreground, Challenges opened, back on the menu). Moves to a new day's set at
+        /// once, and at most every 30 minutes re-reads Remote Config: edits to today's challenges apply now; a change
+        /// that would swap today's set waits for the next day. Returns true when the challenges shown changed.
+        /// </summary>
+        public Task<bool> RefreshAsync()
+        {
+            if (_refreshTask != null && !_refreshTask.IsCompleted) return _refreshTask;
+            _refreshTask = RefreshInternalAsync();
+            return _refreshTask;
+        }
+
+        async Task<bool> RefreshInternalAsync()
+        {
+            if (!_initialised || _save == null) return false;
+            string before = Signature();
+            EnsureToday();
+
+            if (IsOnline && !_fixedFromInspector && DateTime.UtcNow - _lastRemoteFetchUtc >= RemoteRefreshGap)
+            {
+                _lastRemoteFetchUtc = DateTime.UtcNow;
+                bool fresh = false;
+                void OnFetched(ConfigResponse response) => fresh = response.requestOrigin == ConfigOrigin.Remote;
+                try
+                {
+                    RemoteConfigService.Instance.FetchCompleted += OnFetched;
+                    await RemoteConfigService.Instance.FetchConfigsAsync(new UserAttributes(), new AppAttributes());
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[ChallengeProvider] Remote Config refresh failed: " + e.Message);
+                }
+                finally
+                {
+                    RemoteConfigService.Instance.FetchCompleted -= OnFetched;
+                }
+
+                // Only a fresh answer from the server counts; a failed fetch falls back to an old cached copy.
+                if (fresh)
+                {
+                    _fixedSet = ReadChallengeList("daily_challenges");
+                    _pool = ReadChallengeList("challenge_pool") ?? ChallengePool.ToDefinitions(ChallengePool.BuiltIn());
+                    var kept = KeptSet(TodayUtc);
+                    ActiveChallenges = kept ?? PickFor(TodayUtc);
+                    if (!EnsureToday()) CompleteLoweredTargets(); // EnsureToday resets only if today's set had to change
+                }
+            }
+            return Signature() != before;
+        }
+
+        /// <summary>A target lowered in Remote Config can already be met by today's progress.</summary>
+        void CompleteLoweredTargets()
+        {
+            bool any = false;
+            for (int i = 0; i < ActiveChallenges.Length && i < Progress.Length; i++)
+            {
+                if (CompletionBits[i] != 0 || ActiveChallenges[i] == null || Progress[i] < ActiveChallenges[i].TargetValue) continue;
+                CompletionBits[i] = 1;
+                any = true;
+            }
+            if (!any) return;
+            GrantAllDoneBonusIfEarned();
+            StoreLocally();
+        }
+
+        string Signature()
+        {
+            var sb = new System.Text.StringBuilder(_save?.ChallengeSetDate);
+            foreach (var d in ActiveChallenges)
+                if (d != null) sb.Append('|').Append(d.Id).Append(d.Title).Append(d.Description).Append(d.TargetValue).Append(d.RewardPoints).Append(d.Difficulty);
+            foreach (int b in CompletionBits) sb.Append(b);
+            return sb.ToString();
+        }
 
         static string SetIds(ChallengeDefinition[] set)
         {
@@ -321,6 +446,8 @@ namespace StackSurge.Meta
                 if (bit == 0) return;
             _save.ChallengeBonusDate = _save.ChallengeSetDate;
             AddBonusPoints(AllDoneBonusPoints);
+            try { AllChallengesDone?.Invoke(_save.ChallengeSetDate); }
+            catch (Exception e) { Debug.LogWarning("[ChallengeProvider] AllChallengesDone handler failed: " + e.Message); }
         }
 
         /// <summary>Points that start the next run (claimed challenges, the all-done bonus, the 7-day streak).</summary>

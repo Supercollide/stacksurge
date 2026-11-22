@@ -86,6 +86,10 @@ namespace StackSurge.Meta
         // ── Privacy ────────────────────────────────────────────────────
         /// <summary>Unity Analytics consent: 0 = not asked yet, 1 = allowed, -1 = declined (see AnalyticsConsent).</summary>
         public int AnalyticsConsent = 0;
+
+        // ── Achievements ───────────────────────────────────────────────
+        /// <summary>Lifetime totals, earned tiers and the badge on show (see AchievementService).</summary>
+        public AchievementProgress Achievements = new AchievementProgress();
     }
 
     public static class LocalProgress

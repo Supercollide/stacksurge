@@ -26,6 +26,8 @@ namespace StackSurge.UI
         /// <summary>All of today's challenges are done and their bonus was added (this run, or an earlier one today).</summary>
         public bool AllDoneBonusGranted;
         public bool AllDoneBonusThisRun;
+        /// <summary>What this run alone reached for each challenge, in the same order as Challenges. May be null.</summary>
+        public int[] ChallengeThisGame;
     }
 
     /// <summary>
@@ -67,7 +69,7 @@ namespace StackSurge.UI
         {
             public GameObject Root;
             public Image Outline;
-            public TextMeshProUGUI Title, Detail, Value;
+            public TextMeshProUGUI Title, Detail, Value, Sub;
             public Button Claim;
             public TextMeshProUGUI ClaimLabel;
             public RectTransform Fill;
@@ -188,7 +190,7 @@ namespace StackSurge.UI
             _today.text = FormatNumber(data.DailyBest);
             _best.text = FormatNumber(data.AllTimeHigh);
 
-            ShowChallenges(data.Challenges, data.ChallengesBefore);
+            ShowChallenges(data.Challenges, data.ChallengesBefore, data.ChallengeThisGame);
             ShowAllDone(data);
             ShowStreak(data.Streak, data.StreakRewardThisRun);
             _shareLabelTween?.Kill();
@@ -241,7 +243,7 @@ namespace StackSurge.UI
 
         // ── Challenges ───────────────────────────────────────────────
 
-        void ShowChallenges(ChallengeDisplayData[] now, ChallengeDisplayData[] before)
+        void ShowChallenges(ChallengeDisplayData[] now, ChallengeDisplayData[] before, int[] thisGame)
         {
             int count = now?.Length ?? 0;
             _challengesHeader.SetActive(count > 0);
@@ -254,7 +256,8 @@ namespace StackSurge.UI
             for (int i = 0; i < count && sameSet; i++) sameSet = before[i].Title == now[i].Title;
 
             for (int i = 0; i < count; i++)
-                ShowRow(_rows[i], now[i], sameSet ? before[i] : default, sameSet, i);
+                ShowRow(_rows[i], now[i], sameSet ? before[i] : default, sameSet, i,
+                    thisGame != null && i < thisGame.Length ? thisGame[i] : -1);
 
             UpdateResetsIn();
             DOTween.Kill(this);
@@ -270,17 +273,20 @@ namespace StackSurge.UI
             _resetsIn.text = hours > 0 ? $"Resets in {hours}h {left.Minutes}m" : $"Resets in {Mathf.Max(1, left.Minutes)}m";
         }
 
-        void ShowRow(ChallengeRow row, ChallengeDisplayData item, ChallengeDisplayData before, bool hasBefore, int index)
+        void ShowRow(ChallengeRow row, ChallengeDisplayData item, ChallengeDisplayData before, bool hasBefore, int index, int thisGame)
         {
             row.Title.text = item.Title;
             row.Detail.text = DetailText(item, claimed: item.Claimed);
+            row.Sub.text = string.Empty;
+            // A one-game goal doesn't build up across games, so its bar stays empty until a single game finishes it.
+            bool oneGame = !item.Type.IsDayTotal();
             row.Claim.onClick.RemoveAllListeners();
             row.Claim.onClick.AddListener(() => Claim(row, item, index));
             row.Claim.transform.DOKill();
             row.Claim.transform.localScale = Vector3.one;
 
-            float to = Ratio(item);
-            float from = hasBefore ? Mathf.Min(Ratio(before), to) : 0f;
+            float to = oneGame && !item.Completed ? 0f : Ratio(item);
+            float from = oneGame ? 0f : hasBefore ? Mathf.Min(Ratio(before), to) : 0f;
             bool finishedThisRun = item.Completed && !(hasBefore && before.Completed);
 
             // A finished challenge reads teal (bar and border); in progress reads blue.
@@ -310,9 +316,10 @@ namespace StackSurge.UI
             {
                 row.Claim.gameObject.SetActive(false);
                 row.Value.gameObject.SetActive(true);
-                row.Value.text = item.Completed
-                    ? "CLAIMED"
-                    : $"{FormatChallengeValue(item.Type, item.Progress)} / {FormatChallengeValue(item.Type, item.TargetValue)}";
+                bool showThisGame = !item.Completed && oneGame && thisGame >= 0;
+                row.Value.text = item.Completed ? "CLAIMED" : showThisGame ? ThisGameText(item, thisGame) : ProgressText(item);
+                if (showThisGame && item.Progress > thisGame)
+                    row.Sub.text = $"BEST GAME {FormatChallengeValue(item.Type, item.Progress)}";
                 row.Value.color = item.Completed ? UiSkin.Teal : UiSkin.TextMuted;
                 if (finishedThisRun) grow.OnComplete(() => SetRowDone(row, true));
             }
@@ -377,6 +384,13 @@ namespace StackSurge.UI
             valueRect.sizeDelta = new Vector2(RowValueWidth, 44f);
             valueRect.anchoredPosition = new Vector2(-24f, -12f);
             row.Value = NewText(valueRect, 26f, UiSkin.TextMuted, TextAlignmentOptions.MidlineRight);
+
+            // Under the value, level with the difficulty line: the day's best game for a one-game goal.
+            var subRect = NewRect("Sub", rect);
+            subRect.anchorMin = subRect.anchorMax = subRect.pivot = new Vector2(1f, 1f);
+            subRect.sizeDelta = new Vector2(RowValueWidth, 30f);
+            subRect.anchoredPosition = new Vector2(-24f, -56f);
+            row.Sub = NewText(subRect, 20f, UiSkin.TextMuted, TextAlignmentOptions.MidlineRight);
 
             var claimRect = NewRect("ClaimBtn", rect);
             claimRect.anchorMin = claimRect.anchorMax = claimRect.pivot = new Vector2(1f, 1f);
@@ -676,6 +690,24 @@ namespace StackSurge.UI
         }
 
         /// <summary>A challenge's progress or target the way the player reads it: points, a time, or a combo.</summary>
+        /// <summary>
+        /// "3 / 8" for goals that add up over the day. A one-game goal keeps the day's best game, so its number reads
+        /// "BEST GAME 1 / 3": without the label it looked like progress that carries over to the next game.
+        /// </summary>
+        public static string ProgressText(ChallengeDisplayData item)
+        {
+            string text = $"{FormatChallengeValue(item.Type, item.Progress)} / {FormatChallengeValue(item.Type, item.TargetValue)}";
+            return item.Progress > 0 && !item.Type.IsDayTotal() ? $"<size=75%>BEST GAME</size> {text}" : text;
+        }
+
+        /// <summary>Game Over, one-game goal: what the run that just ended reached ("THIS GAME 1 / 3").</summary>
+        static string ThisGameText(ChallengeDisplayData item, int thisGame) =>
+            $"<size=75%>THIS GAME</size> {FormatChallengeValue(item.Type, thisGame)} / {FormatChallengeValue(item.Type, item.TargetValue)}";
+
+        /// <summary>Bar fill for a challenge row: one-game goals stay empty until done (nothing carries over).</summary>
+        public static float BarRatio(ChallengeDisplayData item) =>
+            item.Completed ? 1f : item.Type.IsDayTotal() && item.TargetValue > 0 ? Mathf.Clamp01((float)item.Progress / item.TargetValue) : 0f;
+
         public static string FormatChallengeValue(ChallengeType type, int value) => type switch
         {
             ChallengeType.SurviveSeconds => FormatTime(value),

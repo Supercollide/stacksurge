@@ -1,0 +1,192 @@
+[
+  {
+    "Id": "e_score",
+    "Title": "Score 15,000",
+    "Description": "Reach 15,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 15000,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_runs",
+    "Title": "Play 3 runs",
+    "Description": "Finish 3 runs today.",
+    "Type": "RunsToday",
+    "TargetValue": 3,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_bombs",
+    "Title": "Set off 5 bombs",
+    "Description": "Set off 5 bombs in one run.",
+    "Type": "BombsInRun",
+    "TargetValue": 5,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_match5",
+    "Title": "Match 5",
+    "Description": "Match 5 tiles in a line.",
+    "Type": "Match5InRun",
+    "TargetValue": 1,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_survive3",
+    "Title": "Last 3:00",
+    "Description": "Stay alive for 3 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 180,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "e_score_today",
+    "Title": "50,000 today",
+    "Description": "Score 50,000 across today's runs.",
+    "Type": "ScoreToday",
+    "TargetValue": 50000,
+    "RewardPoints": 1000,
+    "Category": "daily",
+    "Difficulty": "easy"
+  },
+  {
+    "Id": "m_score",
+    "Title": "Score 40,000",
+    "Description": "Reach 40,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 40000,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_rowclear",
+    "Title": "Row clear today",
+    "Description": "Get a ROW CLEAR today.",
+    "Type": "RowsClearedToday",
+    "TargetValue": 1,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_perfect1",
+    "Title": "Perfect clear",
+    "Description": "Empty the whole board once.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 1,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_match5x3",
+    "Title": "Match 5, three times",
+    "Description": "Match 5 tiles in a line, 3 times.",
+    "Type": "Match5InRun",
+    "TargetValue": 3,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_survive",
+    "Title": "Last 4:00",
+    "Description": "Stay alive for 4 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 240,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "m_score_today",
+    "Title": "120,000 today",
+    "Description": "Score 120,000 across today's runs.",
+    "Type": "ScoreToday",
+    "TargetValue": 120000,
+    "RewardPoints": 2000,
+    "Category": "daily",
+    "Difficulty": "medium"
+  },
+  {
+    "Id": "h_score150",
+    "Title": "Score 150,000",
+    "Description": "Reach 150,000 points in one run.",
+    "Type": "ScoreInRun",
+    "TargetValue": 150000,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_perfect2",
+    "Title": "2 perfect clears",
+    "Description": "Empty the board twice in one run.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 2,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_perfect",
+    "Title": "3 perfect clears",
+    "Description": "Empty the board 3 times in one run.",
+    "Type": "PerfectClearsInRun",
+    "TargetValue": 3,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_rowclears",
+    "Title": "3 row clears today",
+    "Description": "Get ROW CLEAR 3 times today.",
+    "Type": "RowsClearedToday",
+    "TargetValue": 3,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_match5x6",
+    "Title": "Match 5, six times",
+    "Description": "Match 5 tiles in a line, 6 times.",
+    "Type": "Match5InRun",
+    "TargetValue": 6,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_survive",
+    "Title": "Last 7:00",
+    "Description": "Stay alive for 7 minutes.",
+    "Type": "SurviveSeconds",
+    "TargetValue": 420,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  },
+  {
+    "Id": "h_score_today400",
+    "Title": "400,000 today",
+    "Description": "Score 400,000 across today's runs.",
+    "Type": "ScoreToday",
+    "TargetValue": 400000,
+    "RewardPoints": 3000,
+    "Category": "daily",
+    "Difficulty": "hard"
+  }
+]

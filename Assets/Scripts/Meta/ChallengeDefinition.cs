@@ -19,7 +19,8 @@ namespace StackSurge.Meta
         Match5InRun,
         RowsClearedToday,
         ScoreToday,
-        RunsToday
+        RunsToday,
+        ChainInRun      // longest run of clears, each within the combo window of the last (no x5 cap)
     }
 
     public static class ChallengeTypeExtensions
