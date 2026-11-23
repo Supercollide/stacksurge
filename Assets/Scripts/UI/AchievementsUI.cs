@@ -50,6 +50,7 @@ namespace StackSurge.UI
         TextMeshProUGUI _detailProgress;
         Image[] _stripEmblems;
         TextMeshProUGUI[] _stripGoals;
+        GameObject _detailButtons;
         Button _profileButton;
         Image _profileButtonBg;
         TextMeshProUGUI _profileButtonLabel;
@@ -93,7 +94,11 @@ namespace StackSurge.UI
         const float HeroBadgeSize = 140f;
         const float HalfBadgeSize = 104f;
         const float AwardBadgeSize = 132f;
-        const float DetailWidth = 860f;
+        const float DetailWidth = 780f;
+        const float DetailMargin = 72f;   // the details panel keeps clear of the screen's sides
+        const float DetailCloseSize = 88f;    // the visible square
+        const float DetailCloseHitSize = 120f; // what takes the tap: about 48 dp on a phone
+        const float DetailCloseInset = 20f;    // its centre, in from the panel's corner: about a quarter of it sticks out
         const float DetailEmblemSize = 230f;
         const float StripEmblemSize = 96f;
         const float BarHeight = 16f;
@@ -551,19 +556,58 @@ namespace StackSurge.UI
             BuildTierStrip(panelObj.transform);
             AddSpacer(panelObj.transform, 18f);
 
-            var buttons = new GameObject("Buttons", typeof(RectTransform));
-            buttons.transform.SetParent(panelObj.transform, false);
-            SetFixedHeight(buttons, CloseButtonHeight);
-            var h = buttons.AddComponent<HorizontalLayoutGroup>();
-            h.spacing = 20f;
+            _detailButtons = new GameObject("Buttons", typeof(RectTransform));
+            _detailButtons.transform.SetParent(panelObj.transform, false);
+            SetFixedHeight(_detailButtons, CloseButtonHeight);
+            var h = _detailButtons.AddComponent<HorizontalLayoutGroup>();
             h.childControlWidth = h.childControlHeight = true;
             h.childForceExpandWidth = h.childForceExpandHeight = true;
-            var back = AddButton(buttons.transform, "BackButton", "Back", UiSkin.SurfaceRaised, out _, out _);
-            back.onClick.AddListener(CloseDetail);
-            _profileButton = AddButton(buttons.transform, "ProfileButton", "", UiSkin.Primary, out _profileButtonBg, out _profileButtonLabel);
+            _profileButton = AddButton(_detailButtons.transform, "ProfileButton", "", UiSkin.Primary, out _profileButtonBg, out _profileButtonLabel);
             _profileButton.onClick.AddListener(OnProfileButton);
+            AddCloseButton(panelObj.transform);
 
             _detailObj.SetActive(false);
+        }
+
+        /// <summary>
+        /// The X, near the panel's top-right corner and partly outside it: two crossed bars on a raised square, inside a
+        /// larger clear square that takes the tap.
+        /// </summary>
+        void AddCloseButton(Transform panel)
+        {
+            var obj = new GameObject("DetailClose", typeof(RectTransform));
+            obj.transform.SetParent(panel, false);
+            obj.AddComponent<LayoutElement>().ignoreLayout = true;
+            var rt = (RectTransform)obj.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = new Vector2(-DetailCloseInset, -DetailCloseInset);
+            rt.sizeDelta = new Vector2(DetailCloseHitSize, DetailCloseHitSize);
+            obj.AddComponent<Image>().color = Clear; // invisible, but takes taps across the whole area
+
+            var square = new GameObject("Square", typeof(RectTransform));
+            square.transform.SetParent(obj.transform, false);
+            ((RectTransform)square.transform).sizeDelta = new Vector2(DetailCloseSize, DetailCloseSize);
+            var bg = square.AddComponent<Image>();
+            bg.color = UiSkin.SurfaceRaised;
+            bg.raycastTarget = false;
+            UiSprites.ApplyRounded(bg, 20f);
+
+            var button = obj.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.onClick.AddListener(CloseDetail);
+            foreach (float angle in new[] { 45f, -45f })
+            {
+                var bar = new GameObject("Bar", typeof(RectTransform));
+                bar.transform.SetParent(square.transform, false);
+                var brt = (RectTransform)bar.transform;
+                brt.sizeDelta = new Vector2(42f, 8f);
+                brt.localRotation = Quaternion.Euler(0f, 0f, angle);
+                var img = bar.AddComponent<Image>();
+                img.color = Color.white;
+                img.raycastTarget = false;
+                UiSprites.ApplyRounded(img, 4f);
+            }
         }
 
         /// <summary>All six badges of the achievement in a row, each with the goal that earns it underneath. These keep
@@ -705,7 +749,7 @@ namespace StackSurge.UI
             }
 
             bool shown = earned && p.ShownBadge == def.Key;
-            _profileButton.gameObject.SetActive(earned);
+            _detailButtons.SetActive(earned); // nothing to show on the profile before the first tier
             _profileButtonLabel.text = shown ? "Remove from profile" : "Show on profile";
             _profileButtonBg.color = shown ? UiSkin.SurfaceRaised : UiSkin.Primary;
         }
@@ -742,7 +786,7 @@ namespace StackSurge.UI
         {
             if (def == null || _detailObj == null) return;
             _detailDef = def;
-            _detailPanel.sizeDelta = new Vector2(Mathf.Min(DetailWidth, _overlayRect.rect.width - 2 * ScreenMargin), _detailPanel.sizeDelta.y);
+            _detailPanel.sizeDelta = new Vector2(Mathf.Min(DetailWidth, _overlayRect.rect.width - 2 * DetailMargin), _detailPanel.sizeDelta.y);
             RefreshDetail();
             _detailObj.SetActive(true);
 

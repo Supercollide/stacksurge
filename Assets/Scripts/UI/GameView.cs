@@ -358,6 +358,7 @@ namespace StackSurge.UI
             // Start hidden – shown after the loading screen completes
             _mainMenuRoot.SetActive(false);
             BuildProfileCard();
+            ShrinkLogo();
 
             // Ensure a CanvasGroup exists for fade animations
             if (_mainMenuRoot.GetComponent<CanvasGroup>() == null)
@@ -576,40 +577,50 @@ namespace StackSurge.UI
             _profileCard.SetLook(badge, playerId, inView);
         }
 
-        // ── Short screens ───────────────────────────────────────────────
-        const float LogoGap = 24f;             // between the logo and the profile card
-        const float LogoTopMargin = 40f;       // below the safe area's top edge, once the logo has to move
-        const float LogoMinSize = 160f;
-        const float MenuBottomMargin = 40f;    // under the last button, above the safe area's bottom edge
-        const float MenuStepTightest = 126f;   // the buttons sit 150 apart, and close up to this on the shortest screens
+        // ── Menu layout ─────────────────────────────────────────────────
+        // The logo is a small mark in the top-left corner, level with SETTINGS; the profile card leads the menu.
+        const float LogoSize = 100f;
+        const float LogoInset = 40f;            // from the left edge, like SETTINGS from the right
+        const float LogoTop = 28f;              // centres it on SETTINGS (40 down, 75 tall)
+        const float TopBarBottom = LogoTop + LogoSize;
+        const float BadgeGap = 24f;             // between the top bar and the top of the tallest badge
+        const float MenuBottomMargin = 40f;     // under the last button, above the safe area's bottom edge
+        const float MenuStepTightest = 126f;    // the buttons sit 150 apart, and close up to this on the shortest screens
 
-        RectTransform _menuLogo, _menuCard;
+        RectTransform _menuCard;
         readonly List<RectTransform> _menuStack = new List<RectTransform>(); // PLAY GAME and the buttons under it, top down
         readonly List<float> _menuStackY = new List<float>();
-        Vector2 _menuLogoSize, _menuLogoPosition;
         float _menuCardY;
         bool _menuMeasured;
 
+        /// <summary>Makes the prefab's big centred logo a small mark in the top-left corner.</summary>
+        void ShrinkLogo()
+        {
+            if (!(_mainMenuRoot.transform.Find("StackSurgeLogo") is RectTransform logo)) return;
+            logo.anchorMin = logo.anchorMax = logo.pivot = new Vector2(0f, 1f);
+            logo.localScale = Vector3.one;
+            logo.sizeDelta = new Vector2(LogoSize, LogoSize);
+            logo.anchoredPosition = new Vector2(LogoInset, -LogoTop);
+        }
+
         /// <summary>
-        /// The logo is pinned to the top of the screen; the profile card and the buttons to the middle. Phones have the
-        /// height for that. On shorter screens (tablets, 3:4 iPads) they would overlap, so the card and the buttons move
-        /// down into the space under the last button, the buttons close up (down to <see cref="MenuStepTightest"/>
-        /// apart) when that space isn't enough, and as a last resort the logo shrinks into what's left above the card.
+        /// The profile card and the buttons are pinned to the middle of the screen, and the card's badge rises above
+        /// the card. Phones have the height for that. On shorter screens (tablets, 3:4 iPads) the badge would reach the
+        /// top bar, so the card and the buttons move down into the space under the last button, and the buttons close
+        /// up (down to <see cref="MenuStepTightest"/> apart) when that space isn't enough.
         /// </summary>
         void FitMenuToScreen()
         {
             var root = (RectTransform)_mainMenuRoot.transform;
             if (!_menuMeasured) MeasureMenu(root);
-            if (_menuLogo == null || _menuCard == null || _menuStack.Count == 0) return;
+            if (_menuCard == null || _menuStack.Count == 0) return;
             float height = root.rect.height;
             if (height <= 0f || Screen.height <= 0) return;
 
             float half = height * 0.5f;
-            float safeTop = (Screen.height - Screen.safeArea.yMax) / Screen.height * height;
             float safeBottom = Screen.safeArea.yMin / Screen.height * height;
             float cardTop = half - _menuCardY - _menuCard.rect.height;  // from the screen's top edge (pivot at its bottom)
-            float logoBottom = -_menuLogoPosition.y + _menuLogoSize.y * 0.5f;
-            float shortfall = Mathf.Max(0f, logoBottom + LogoGap - cardTop);
+            float shortfall = Mathf.Max(0f, TopBarBottom + BadgeGap + ProfileCardView.BadgeRise - cardTop);
 
             int gaps = _menuStack.Count - 1;
             var last = _menuStack[gaps];
@@ -621,29 +632,14 @@ namespace StackSurge.UI
             _menuCard.anchoredPosition = new Vector2(_menuCard.anchoredPosition.x, _menuCardY - shift);
             for (int i = 0; i < _menuStack.Count; i++)
                 _menuStack[i].anchoredPosition = new Vector2(_menuStack[i].anchoredPosition.x, _menuStackY[i] + close * i - shift);
-
-            float roomForLogo = cardTop + shift - LogoGap;
-            if (logoBottom <= roomForLogo)
-            {
-                _menuLogo.sizeDelta = _menuLogoSize;
-                _menuLogo.anchoredPosition = _menuLogoPosition;
-                return;
-            }
-            float top = safeTop + LogoTopMargin;
-            float size = Mathf.Clamp(roomForLogo - top, LogoMinSize, _menuLogoSize.y);
-            _menuLogo.sizeDelta = _menuLogoSize * (size / _menuLogoSize.y);
-            _menuLogo.anchoredPosition = new Vector2(_menuLogoPosition.x, -(top + size * 0.5f));
         }
 
-        /// <summary>Remembers where the prefab (and the ACHIEVEMENTS button added in code) put the logo, card and buttons.</summary>
+        /// <summary>Remembers where the prefab (and the ACHIEVEMENTS button added in code) put the card and buttons.</summary>
         void MeasureMenu(RectTransform root)
         {
             _menuMeasured = true;
-            _menuLogo = root.Find("StackSurgeLogo") as RectTransform;
             _menuCard = root.Find("StatsCard") as RectTransform;
-            if (_menuLogo == null || _menuCard == null) return;
-            _menuLogoSize = _menuLogo.sizeDelta;
-            _menuLogoPosition = _menuLogo.anchoredPosition;
+            if (_menuCard == null) return;
             _menuCardY = _menuCard.anchoredPosition.y;
 
             var centre = new Vector2(0.5f, 0.5f);

@@ -19,37 +19,40 @@ namespace StackSurge.UI
     public class ProfileCardView : MonoBehaviour
     {
         // Layout in the card's units, from its top-left corner (the prefab card is 750 x 420).
-        const float CardHeight = 420f;
+        const float CardHeight = 466f;
         const float CardRadius = 32f;
         const float Pad = 22f;
-        const float BandHeight = 160f;
+        const float BandHeight = 194f;
         const float LipHeight = 6f;
-        const float PlateTop = 32f;
-        const float PlateSize = 194f;
-        const float ArtBox = 255f;      // the badge's longer side: bigger than its tile, so it stands out of it
-        const float ArtBase = 25f;      // the badge's bottom edge, above the tile's
-        const float BlockSize = 116f;
-        const float TextLeft = 236f;   // the stat rows
-        const float NameLeft = 256f;   // the name and caption, clear of a wide badge's wings
-        const float NameTop = 26f;
-        const float NameHeight = 62f;
-        const float CaptionTop = 92f;
+        const float PlateTop = 36f;
+        const float PlateSize = 217f;
+        const float ArtBox = 370f;      // the badge's longer side: well past its tile, so it stands out of it
+        const float ArtBase = 29f;      // the badge's bottom edge, above the tile's
+        const float BlockSize = 130f;
+        const float TextLeft = PlateSize + Pad + 25f;                  // the stat rows, beside the tile
+        const float NameLeft = Pad + PlateSize * 0.5f + ArtBox * 0.5f + 16f; // the name and caption, clear of a wide badge's wings
+        const float NameTop = 34f;
+        const float NameHeight = 64f;
+        const float CaptionTop = 104f;
         const float CaptionHeight = 32f;
-        const float RowTop = 178f;
-        const float RowHeight = 62f;
-        const float RowStep = 72f;
-        const float StreakTop = 240f;
-        const float StreakHeight = 72f;
-        const float InputTop = 334f;
+        const float RowTop = 226f;
+        const float RowHeight = 63f;
+        const float RowStep = 76f;
+        const float StreakTop = PlateTop + PlateSize + 15f;
+        const float StreakHeight = 76f;
+        const float InputTop = 384f;
         const float InputHeight = 60f;
-        const float SaveWidth = 118f;
-        const float BoltWidth = 118f, BoltHeight = 181f;
+        const float SaveWidth = 120f;
+        const float BoltWidth = 140f, BoltHeight = 215f;
+
+        /// <summary>How far the tallest badge rises above the card's top edge (the menu keeps this much room clear).</summary>
+        public const float BadgeRise = ArtBox + ArtBase - PlateTop - PlateSize;
 
         // Motion
-        const float DropHeight = 300f;
+        const float DropHeight = 340f;
         const float DropTime = 0.6f;
         const float FirstTouch = DropTime / 2.75f; // Ease.OutBounce first reaches the bottom here
-        const float HopHeight = 63f;
+        const float HopHeight = 70f;
 
         static readonly Color PlateFace = new Color32(0x26, 0x30, 0x49, 0xFF);
         static readonly Color LabelColor = new Color32(0xC9, 0xD1, 0xE0, 0xFF);
@@ -215,7 +218,7 @@ namespace StackSurge.UI
                 name.textWrappingMode = TextWrappingModes.NoWrap;
                 name.overflowMode = TextOverflowModes.Ellipsis;
                 name.enableAutoSizing = true;
-                name.fontSizeMax = 46f;
+                name.fontSizeMax = 52f;
                 name.fontSizeMin = 28f;
             }
             _caption = AddText(_identity, "Caption", 22f, new Color(1f, 1f, 1f, 0.82f));
