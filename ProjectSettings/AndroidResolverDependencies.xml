@@ -2,6 +2,8 @@
   <packages>
     <package>com.google.android.gms:play-services-games-v2:22.1.0</package>
     <package>com.google.android.gms:play-services-nearby:18.5.0</package>
+    <package>com.google.android.play:app-update:2.1.0</package>
+    <package>com.google.android.play:core-common:2.0.4</package>
     <package>com.onesignal:OneSignal:5.9.6</package>
   </packages>
   <files />

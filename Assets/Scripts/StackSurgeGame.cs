@@ -250,6 +250,7 @@ namespace StackSurge
                 playGames: _provider.PlayGames);
             _notificationSettingsUI.Closed += OnNotificationSettingsClosed;
             SetUpPlayGames();
+            SetUpAppUpdates();
 
             _view.EnableStartButton();
         }
@@ -691,6 +692,7 @@ namespace StackSurge
                 // If the game started offline, back in the foreground is a good moment to try signing in again.
                 if (_provider != null) _ = _provider.TryReconnectAsync(userAction: false);
                 RefreshChallenges(); // a new day's set, or Remote Config edits, without a restart
+                _appUpdate?.Check(); // an update may have come out, or finished downloading, while the game was away
             }
         }
 
@@ -1324,11 +1326,27 @@ namespace StackSurge
             }
         }
 
+        // ── In-app updates ───────────────────────────────────────────────────
+        PlayAppUpdate _appUpdate;
+
+        /// <summary>Google Play's in-app updates, offered by the banner at the bottom of the menu.</summary>
+        void SetUpAppUpdates()
+        {
+            _appUpdate = gameObject.AddComponent<PlayAppUpdate>();
+            _appUpdate.Changed += () => _view.ShowUpdateBanner(_appUpdate.Current, _appUpdate.Progress);
+            _view.OnUpdateBannerButton = () =>
+            {
+                if (_appUpdate.Current == PlayAppUpdate.Stage.Ready) _appUpdate.Restart();
+                else _appUpdate.StartUpdate();
+            };
+        }
+
         void OnLoadingScreenFinished()
         {
             _playing = false;
             if (_leaderboardManager != null) _leaderboardManager.HideLeaderboard();
             _view.ShowMainMenu(false, profileEntrance: true);
+            _appUpdate?.Check();
             if (_analyticsConsentUI != null) _analyticsConsentUI.ShowIfNeeded();
 
             // A push or reminder tap that launched the app; wait if the consent prompt is up.

@@ -359,6 +359,7 @@ namespace StackSurge.UI
             _mainMenuRoot.SetActive(false);
             BuildProfileCard();
             ShrinkLogo();
+            BuildUpdateBanner();
 
             // Ensure a CanvasGroup exists for fade animations
             if (_mainMenuRoot.GetComponent<CanvasGroup>() == null)
@@ -604,12 +605,13 @@ namespace StackSurge.UI
         }
 
         /// <summary>
-        /// The profile card and the buttons are pinned to the middle of the screen, and the card's badge rises above
-        /// the card. Phones have the height for that. On shorter screens (tablets, 3:4 iPads) the badge would reach the
-        /// top bar, so the card and the buttons move down into the space under the last button, and the buttons close
-        /// up (down to <see cref="MenuStepTightest"/> apart) when that space isn't enough.
+        /// The profile card and the buttons are pinned to the middle of the screen; the card's badge rises above the card,
+        /// and the update banner, when it shows, takes the space under the last button. Tall phones have room for both.
+        /// Where they don't fit (16:9 phones with the banner, tablets, near-square 3:4 tablets) the card and buttons move up or down
+        /// as one, and the buttons close up (down to <see cref="MenuStepTightest"/> apart) when moving isn't enough.
+        /// On the shortest screens the badge's room wins and the banner may cover the bottom button until it's closed.
         /// </summary>
-        void FitMenuToScreen()
+        void FitMenuToScreen(bool animate = false)
         {
             var root = (RectTransform)_mainMenuRoot.transform;
             if (!_menuMeasured) MeasureMenu(root);
@@ -619,19 +621,62 @@ namespace StackSurge.UI
 
             float half = height * 0.5f;
             float safeBottom = Screen.safeArea.yMin / Screen.height * height;
-            float cardTop = half - _menuCardY - _menuCard.rect.height;  // from the screen's top edge (pivot at its bottom)
-            float shortfall = Mathf.Max(0f, TopBarBottom + BadgeGap + ProfileCardView.BadgeRise - cardTop);
-
+            float cardTop = half - _menuCardY - _menuCard.rect.height;   // from the screen's top edge (pivot at its bottom)
             int gaps = _menuStack.Count - 1;
             var last = _menuStack[gaps];
-            float lastBottom = -_menuStackY[gaps] + last.rect.height * 0.5f; // below the middle
-            float room = half - safeBottom - MenuBottomMargin - lastBottom;
-            float close = shortfall > 0f && gaps > 0 ? Mathf.Clamp((shortfall - room) / gaps, 0f, MenuButtonStep - MenuStepTightest) : 0f;
-            float shift = Mathf.Clamp(Mathf.Min(shortfall, room + close * gaps), 0f, shortfall);
+            float lastBottom = half + _menuStackY[gaps] - last.rect.height * 0.5f; // from the screen's bottom edge
+            bool banner = _updateBanner != null && _updateBanner.Visible;
+            float bottomNeeded = safeBottom + MenuBottomMargin + (banner ? UpdateBannerView.BottomMargin + UpdateBannerView.Height - MenuBottomMargin + BannerGap : 0f);
 
-            _menuCard.anchoredPosition = new Vector2(_menuCard.anchoredPosition.x, _menuCardY - shift);
-            for (int i = 0; i < _menuStack.Count; i++)
-                _menuStack[i].anchoredPosition = new Vector2(_menuStack[i].anchoredPosition.x, _menuStackY[i] + close * i - shift);
+            float down = TopBarBottom + BadgeGap + ProfileCardView.BadgeRise - cardTop; // > 0: the card must come down this much
+            float up = bottomNeeded - lastBottom;                                      // > 0: the last button must go up this much
+            float close = down + up > 0f && gaps > 0 ? Mathf.Min((down + up) / gaps, MenuButtonStep - MenuStepTightest) : 0f;
+            float lo = down, hi = close * gaps - up; // the shifts (downwards) that keep both clear
+            float shift = lo <= hi ? Mathf.Clamp(0f, lo, hi) : lo;
+
+            Move(_menuCard, _menuCardY - shift, animate);
+            for (int i = 0; i < _menuStack.Count; i++) Move(_menuStack[i], _menuStackY[i] + close * i - shift, animate);
+        }
+
+        static void Move(RectTransform rt, float y, bool animate)
+        {
+            rt.DOKill();
+            if (animate) rt.DOAnchorPosY(y, 0.3f).SetEase(Ease.OutCubic).SetUpdate(true);
+            else rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, y);
+        }
+
+        // ── Update banner ───────────────────────────────────────────────
+        const float BannerGap = 24f; // between the last button and the update banner
+
+        UpdateBannerView _updateBanner;
+        bool _updateBannerClosed; // closed with its X: hidden until the next launch
+
+        /// <summary>UPDATE or RESTART on the update banner. Set by the game.</summary>
+        public Action OnUpdateBannerButton;
+
+        void BuildUpdateBanner()
+        {
+            var logo = _mainMenuRoot.transform.Find("StackSurgeLogo") is Transform t && t.TryGetComponent(out Image image) ? image.sprite : null;
+            _updateBanner = UpdateBannerView.Create((RectTransform)_mainMenuRoot.transform, UiFont, logo,
+                () => OnUpdateBannerButton?.Invoke(), CloseUpdateBanner);
+        }
+
+        /// <summary>Shows the update banner at this stage of Google Play's in-app update (None hides it).</summary>
+        public void ShowUpdateBanner(PlayAppUpdate.Stage stage, float progress)
+        {
+            if (_updateBanner == null) return;
+            bool wasVisible = _updateBanner.Visible;
+            bool show = stage != PlayAppUpdate.Stage.None && (!_updateBannerClosed || stage == PlayAppUpdate.Stage.Downloading);
+            if (show) _updateBanner.Show(stage, progress);
+            else _updateBanner.Hide();
+            if (wasVisible != _updateBanner.Visible && _mainMenuRoot.activeInHierarchy) FitMenuToScreen(animate: true);
+        }
+
+        void CloseUpdateBanner()
+        {
+            _updateBannerClosed = true;
+            _updateBanner.Hide();
+            if (_mainMenuRoot.activeInHierarchy) FitMenuToScreen(animate: true);
         }
 
         /// <summary>Remembers where the prefab (and the ACHIEVEMENTS button added in code) put the card and buttons.</summary>

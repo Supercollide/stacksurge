@@ -1,5 +1,26 @@
 {
   "dependencies": {
+    "com.google.play.appupdate": {
+      "version": "file:com.google.play.appupdate",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.google.play.common": "1.9.2",
+        "com.google.play.core": "1.8.5"
+      }
+    },
+    "com.google.play.common": {
+      "version": "file:com.google.play.common",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
+    "com.google.play.core": {
+      "version": "file:com.google.play.core",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.onesignal.unity.android": {
       "version": "5.3.1",
       "depth": 0,

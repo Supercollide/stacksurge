@@ -1,7 +1,10 @@
 ﻿<Solution>
   <Project Path="Google.Play.Games.csproj" />
+  <Project Path="Google.Play.AppUpdate.csproj" />
+  <Project Path="Google.Play.Core.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Google.Play.Games.Editor.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
   <Project Path="Assembly-CSharp-firstpass.csproj" />
+  <Project Path="Google.Play.Common.csproj" />
 </Solution>

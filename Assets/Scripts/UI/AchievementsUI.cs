@@ -777,9 +777,10 @@ namespace StackSurge.UI
         {
             if (_service == null || _detailDef == null) return;
             bool shown = _service.Progress.ShownBadge == _detailDef.Key;
-            _service.SetShownBadge(shown ? null : _detailDef.Key); // raises Changed, which redraws both views
+            _service.SetShownBadge(shown ? null : _detailDef.Key); // raises Changed, which redraws the tiles
             SfxPlayer.Play(Sfx.UiTap);
             Haptics.Light();
+            CloseDetail(); // back to the tiles, where the gold edge and ON PROFILE tag show the choice
         }
 
         void OpenDetail(AchievementDef def)
