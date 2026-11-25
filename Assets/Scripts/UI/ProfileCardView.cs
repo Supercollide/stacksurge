@@ -11,9 +11,10 @@ namespace StackSurge.UI
     /// <summary>
     /// The profile card on the main menu. Its top band takes the colour of the badge on show (or of the player's block
     /// when there's none), and the badge stands on a raised tile over the band's edge with the name beside it; the best
-    /// scores, the streak and the nickname field follow. It moves at three moments: when the menu opens (the colour
-    /// fills in and the badge lands), when another badge goes on show (the card repaints), and when the badge on show
-    /// goes up a tier (the logo's bolt crosses the band and the badge hops up a tier).
+    /// scores, the streak and the nickname field follow. The badge is stamped onto its tile at three moments: when the
+    /// menu opens (the colour fills in first), when another badge goes on show (the old one lifts off and the card
+    /// repaints), and when the badge on show goes up a tier (it lifts while the logo's bolt crosses the band, then is
+    /// stamped back down as the new tier).
     /// The scores, streak, name and nickname field are the menu prefab's own components, moved into this layout.
     /// </summary>
     public class ProfileCardView : MonoBehaviour
@@ -48,11 +49,15 @@ namespace StackSurge.UI
         /// <summary>How far the tallest badge rises above the card's top edge (the menu keeps this much room clear).</summary>
         public const float BadgeRise = ArtBox + ArtBase - PlateTop - PlateSize;
 
-        // Motion
-        const float DropHeight = 340f;
-        const float DropTime = 0.6f;
-        const float FirstTouch = DropTime / 2.75f; // Ease.OutBounce first reaches the bottom here
-        const float HopHeight = 70f;
+        // Motion: the badge is pressed onto its tile like a stamp.
+        const float StampFrom = 1.6f;     // how big the badge starts, over its place
+        const float StampSink = 33f;      // how far below its place it starts, so the big version stays centred on it
+        const float StampTime = 0.22f;
+        const float ImpactTime = 0.06f;   // squashing on the tile
+        const float SettleTime = 0.24f;   // back to shape, with a little overshoot
+        const float Shake = 8f, ShakeTierUp = 10f, ShakeTime = 0.22f;
+        const float LiftScale = 1.15f, LiftRaise = 27f, LiftTilt = -6f; // a tier up lifts the badge before stamping it back
+        const float LiftOffScale = 1.25f, LiftOffRaise = 36f, LiftOffTime = 0.24f; // a badge taken off the profile
 
         static readonly Color PlateFace = new Color32(0x26, 0x30, 0x49, 0xFF);
         static readonly Color LabelColor = new Color32(0xC9, 0xD1, 0xE0, 0xFF);
@@ -64,6 +69,7 @@ namespace StackSurge.UI
         class Look
         {
             public RectTransform Root;
+            public RectTransform Stamp; // scales and tilts about the line the badge stands on
             public CanvasGroup Group;
             public Image Art;
             public Image Block;
@@ -81,7 +87,6 @@ namespace StackSurge.UI
         Image _boltImage;
         RectTransform _plate;
         Image _ring;
-        RectTransform _sink;
         Look _current, _spare;
         RectTransform _identity;
         CanvasGroup _identityGroup;
@@ -172,12 +177,6 @@ namespace StackSurge.UI
             UiSprites.ApplyRoundedOutline(_ring, PlateSize * 22f / 128f); // the tile sprite's corner radius at this size
             _ring.raycastTarget = false;
 
-            // The old badge sinks into the tile: cut off at the face's bottom edge only, as it stands out above and to the sides.
-            _sink = Stretch("Sink", _plate);
-            _sink.offsetMin = new Vector2(-PlateSize, PlateSize * 7f / 128f);
-            _sink.offsetMax = new Vector2(PlateSize, PlateSize * 2f);
-            _sink.gameObject.AddComponent<RectMask2D>();
-
             _current = BuildLook(_plate);
             _spare = BuildLook(_plate);
             _spare.Group.alpha = 0f;
@@ -188,6 +187,9 @@ namespace StackSurge.UI
             var root = Stretch("Look", parent);
             var look = new Look { Root = root, Group = root.gameObject.AddComponent<CanvasGroup>() };
             look.Group.blocksRaycasts = false;
+            look.Stamp = Stretch("Stamp", root);
+            look.Stamp.pivot = new Vector2(0.5f, ArtBase / PlateSize);
+            root = look.Stamp;
             float lift = PlateSize * PlayerEmblem.FaceLift;
             look.Art = Centered("Badge", root, ArtBox, lift);
             look.Art.sprite = UiSprites.Circle; // replaced in Fill; a sprite-less image would get rounded by UiSkin
@@ -326,14 +328,13 @@ namespace StackSurge.UI
             _wipe.sizeDelta = new Vector2(0f, _wipe.sizeDelta.y);
             _identityGroup.alpha = 0f;
             _identity.anchoredPosition = new Vector2(NameLeft + 36f, _identity.anchoredPosition.y);
-            _current.Group.alpha = 0f;
-            _current.Root.anchoredPosition = new Vector2(0f, DropHeight);
+            ReadyToStamp(_current);
 
             StartMotion();
             _motion.Insert(0.05f, Wipe());
             _motion.Insert(0.2f, _identityGroup.DOFade(1f, 0.3f));
             _motion.Insert(0.2f, _identity.DOAnchorPosX(NameLeft, 0.35f).SetEase(Ease.OutCubic));
-            Land(_current, 0.3f);
+            Stamp(_current, 0.3f);
             _motion.OnComplete(Finish);
         }
 
@@ -350,7 +351,7 @@ namespace StackSurge.UI
             else PlayRepaint();
         }
 
-        /// <summary>The old badge sinks into its tile, the new colour paints across, and the new badge drops in.</summary>
+        /// <summary>The old badge lifts off and fades, the new colour paints across, and the new badge is stamped on.</summary>
         void PlayRepaint()
         {
             Color from = PlayerEmblem.LookColor(_shownBadge, _shownId), to = PlayerEmblem.LookColor(_badge, _playerId);
@@ -361,28 +362,26 @@ namespace StackSurge.UI
             Look old = _current, next = _spare;
             _current = next;
             _spare = old;
-            old.Root.SetParent(_sink, true);
             Rest(next, 0f);
             Fill(next);
             next.Root.SetAsLastSibling();
-            next.Group.alpha = 0f;
-            next.Root.anchoredPosition = new Vector2(0f, DropHeight);
+            ReadyToStamp(next);
 
             StartMotion();
-            // Far enough that even a tall badge, standing above its tile, is gone below the face's bottom edge.
-            _motion.Insert(0f, old.Root.DOAnchorPosY(old.Root.anchoredPosition.y - (ArtBase + ArtBox) * 1.05f, 0.3f).SetEase(Ease.InCubic));
-            _motion.InsertCallback(0.3f, () => old.Group.alpha = 0f);
-            _motion.Insert(0.25f, Wipe());
-            _motion.InsertCallback(0.3f, () =>
+            _motion.Insert(0f, old.Stamp.DOScale(LiftOffScale, LiftOffTime).SetEase(Ease.OutQuad));
+            _motion.Insert(0f, old.Stamp.DOAnchorPosY(LiftOffRaise, LiftOffTime).SetEase(Ease.OutQuad));
+            _motion.Insert(0f, old.Group.DOFade(0f, LiftOffTime).SetEase(Ease.OutQuad));
+            _motion.Insert(0.15f, Wipe());
+            _motion.InsertCallback(0.25f, () =>
             {
                 _caption.text = Caption(_badge);
                 _ring.color = Lip(to);
             });
-            Land(next, 0.35f);
+            Stamp(next, 0.25f);
             _motion.OnComplete(Finish);
         }
 
-        /// <summary>The logo's bolt crosses the band, and the badge hops and comes down as the new tier.</summary>
+        /// <summary>The badge lifts and tilts while the logo's bolt crosses the band, then is stamped back down as the new tier.</summary>
         void PlayTierUp()
         {
             Color colour = PlayerEmblem.LookColor(_badge, _playerId);
@@ -392,36 +391,60 @@ namespace StackSurge.UI
             _boltImage.color = bolt;
             _bolt.anchoredPosition = new Vector2(-BoltWidth - 20f, _bolt.anchoredPosition.y);
 
+            var stamp = _current.Stamp;
+            const float down = 0.4f, hit = down + 0.18f;
             StartMotion();
-            _motion.Insert(0.1f, _bolt.DOAnchorPosX(_width + 20f, 0.5f).SetEase(Ease.Linear));
-            _motion.Insert(0.3f, _current.Root.DOAnchorPosY(HopHeight, 0.21f).SetEase(Ease.OutQuad));
-            _motion.InsertCallback(0.51f, () =>
+            _motion.Insert(0.15f, _bolt.DOAnchorPosX(_width + 20f, 0.45f).SetEase(Ease.Linear));
+            _motion.Insert(0f, stamp.DOScale(LiftScale, 0.25f).SetEase(Ease.OutCubic));
+            _motion.Insert(0f, stamp.DOAnchorPosY(LiftRaise, 0.25f).SetEase(Ease.OutCubic));
+            _motion.Insert(0f, stamp.DOLocalRotate(new Vector3(0f, 0f, LiftTilt), 0.25f).SetEase(Ease.OutCubic));
+            _motion.InsertCallback(down, () =>
             {
                 Fill(_current);
                 _caption.text = Caption(_badge);
-                _caption.rectTransform.localScale = Vector3.one * 1.18f;
             });
-            _motion.Insert(0.51f, _current.Root.DOAnchorPosY(0f, 0.21f).SetEase(Ease.InQuad));
-            _motion.Insert(0.51f, _caption.rectTransform.DOScale(1f, 0.3f).SetEase(Ease.OutCubic));
-            _motion.InsertCallback(0.72f, Haptics.Light);
-            Squash(0.72f);
+            _motion.Insert(down, stamp.DOScale(1f, hit - down).SetEase(Ease.InQuad));
+            _motion.Insert(down, stamp.DOAnchorPosY(0f, hit - down).SetEase(Ease.InQuad));
+            _motion.Insert(down, stamp.DOLocalRotate(Vector3.zero, hit - down).SetEase(Ease.InQuad));
+            _motion.InsertCallback(hit, () => _caption.rectTransform.localScale = Vector3.one * 1.18f);
+            _motion.Insert(hit, _caption.rectTransform.DOScale(1f, 0.3f).SetEase(Ease.OutCubic));
+            Impact(_current, hit, ShakeTierUp, tierUp: true);
             _motion.OnComplete(Finish);
         }
 
         Tween Wipe() => _wipe.DOSizeDelta(new Vector2(_width, _wipe.sizeDelta.y), 0.4f).SetEase(Ease.OutCubic);
 
-        /// <summary>Drops a look onto the tile from above, with the bounce the board's blocks land with.</summary>
-        void Land(Look look, float at)
+        /// <summary>Hides a look, big and a little low, ready to be stamped on.</summary>
+        static void ReadyToStamp(Look look)
         {
-            _motion.InsertCallback(at, () => look.Group.alpha = 1f);
-            _motion.Insert(at, look.Root.DOAnchorPosY(0f, DropTime).SetEase(Ease.OutBounce));
-            Squash(at + FirstTouch);
+            look.Group.alpha = 0f;
+            look.Stamp.localScale = Vector3.one * StampFrom;
+            look.Stamp.anchoredPosition = new Vector2(0f, -StampSink);
         }
 
-        void Squash(float at)
+        /// <summary>Presses a look onto its tile: it shrinks from big and faint down onto the line it stands on.</summary>
+        void Stamp(Look look, float at)
         {
-            _motion.Insert(at, _plate.DOScaleY(0.93f, 0.09f).SetEase(Ease.OutQuad));
-            _motion.Insert(at + 0.09f, _plate.DOScaleY(1f, 0.09f).SetEase(Ease.InQuad));
+            _motion.Insert(at, look.Group.DOFade(1f, 0.1f));
+            _motion.Insert(at, look.Stamp.DOScale(1f, StampTime).SetEase(Ease.InQuad));
+            _motion.Insert(at, look.Stamp.DOAnchorPosY(0f, StampTime).SetEase(Ease.InQuad));
+            Impact(look, at + StampTime, Shake, tierUp: false);
+        }
+
+        /// <summary>The moment it lands: the badge squashes and settles, the tile dips, the card shakes, a sound and a buzz.</summary>
+        void Impact(Look look, float at, float shake, bool tierUp)
+        {
+            _motion.Insert(at, look.Stamp.DOScale(new Vector3(1.08f, 0.9f, 1f), ImpactTime).SetEase(Ease.Linear));
+            _motion.Insert(at + ImpactTime, look.Stamp.DOScale(Vector3.one, SettleTime).SetEase(Ease.OutBack));
+            _motion.Insert(at, _plate.DOScaleY(0.93f, ImpactTime).SetEase(Ease.Linear));
+            _motion.Insert(at + ImpactTime, _plate.DOScaleY(1f, SettleTime).SetEase(Ease.OutQuad));
+            _motion.Insert(at, _card.DOPunchAnchorPos(new Vector2(shake, 0f), ShakeTime, 12, 0.6f));
+            _motion.InsertCallback(at, () =>
+            {
+                SfxPlayer.Play(tierUp ? Sfx.NewBest : Sfx.Drop);
+                if (tierUp) Haptics.Medium();
+                else Haptics.Light();
+            });
         }
 
         void StartMotion()
@@ -465,6 +488,9 @@ namespace StackSurge.UI
             look.Root.anchorMin = Vector2.zero;
             look.Root.anchorMax = Vector2.one;
             look.Root.offsetMin = look.Root.offsetMax = Vector2.zero;
+            look.Stamp.localScale = Vector3.one;
+            look.Stamp.localRotation = Quaternion.identity;
+            look.Stamp.anchoredPosition = Vector2.zero;
             look.Group.alpha = alpha;
         }
 

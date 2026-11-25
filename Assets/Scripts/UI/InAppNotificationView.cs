@@ -33,6 +33,7 @@ namespace StackSurge.UI
             public NotificationType Type;
             public Action OnTap;
             public Sprite Icon; // shown in full colour in place of the round type marker (e.g. a new badge)
+            public float Seconds; // how long it stays up; 0 = DisplaySeconds
         }
 
         private const float DisplaySeconds = 3.5f;
@@ -212,8 +213,9 @@ namespace StackSurge.UI
             tapButton.onClick.AddListener(OnToastTapped);
         }
 
+        /// <param name="seconds">How long the toast stays up; 0 keeps the usual time.</param>
         public static void Show(string title, string message, NotificationType type = NotificationType.Info, Action onTap = null,
-            Sprite icon = null)
+            Sprite icon = null, float seconds = 0f)
         {
             EnsureInstance();
 
@@ -222,7 +224,7 @@ namespace StackSurge.UI
             string cleanMessage = StripUnsupportedGlyphs(message);
             if (cleanTitle.Length == 0 && cleanMessage.Length == 0) return;
 
-            _instance.Enqueue(new Toast { Title = cleanTitle, Message = cleanMessage, Type = type, OnTap = onTap, Icon = icon });
+            _instance.Enqueue(new Toast { Title = cleanTitle, Message = cleanMessage, Type = type, OnTap = onTap, Icon = icon, Seconds = seconds });
         }
 
         private void Enqueue(Toast toast)
@@ -294,8 +296,8 @@ namespace StackSurge.UI
                 _toastPanel.DOAnchorPosY(ShownY, 0.45f).SetEase(Ease.OutBack).SetUpdate(true);
                 _canvasGroup.DOFade(1f, 0.35f).SetUpdate(true);
 
-                float elapsed = 0f;
-                while (elapsed < DisplaySeconds && !_skipCurrent)
+                float elapsed = 0f, seconds = toast.Seconds > 0f ? toast.Seconds : DisplaySeconds;
+                while (elapsed < seconds && !_skipCurrent)
                 {
                     elapsed += Time.unscaledDeltaTime;
                     yield return null;

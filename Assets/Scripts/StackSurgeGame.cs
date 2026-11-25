@@ -496,6 +496,9 @@ namespace StackSurge
         /// A toast for badges just earned. Toasts wait while a run is being played, so these show on the game-over
         /// screen or the menu. Tapping one opens Achievements.
         /// </summary>
+        /// <summary>New-badge toasts stay up longer than others: they arrive as a run ends, while the player reads their score.</summary>
+        const float BadgeToastSeconds = 6f;
+
         void AnnounceBadges(System.Collections.Generic.List<(AchievementDef def, int tier)> earned)
         {
             if (earned == null || earned.Count == 0) return;
@@ -506,7 +509,7 @@ namespace StackSurge
             {
                 InAppNotificationView.Show($"New badge: {def.Name}",
                     $"Tier {tier} of {AchievementCatalog.Tiers}, for {def.GoalText(tier)}. Tap to see your badges.",
-                    NotificationType.Info, OpenAchievements, icon);
+                    NotificationType.Info, OpenAchievements, icon, BadgeToastSeconds);
                 return;
             }
 
@@ -520,7 +523,7 @@ namespace StackSurge
             }
             if (named < earned.Count) names.Append($" and {earned.Count - named} more");
             InAppNotificationView.Show($"{earned.Count} new badges", $"{names}. Tap to see them.",
-                NotificationType.Info, OpenAchievements, icon);
+                NotificationType.Info, OpenAchievements, icon, BadgeToastSeconds);
         }
 
         /// <summary>A badge on the leaderboard was tapped: say what it's for.</summary>
