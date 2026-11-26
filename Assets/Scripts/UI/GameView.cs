@@ -651,7 +651,7 @@ namespace StackSurge.UI
         UpdateBannerView _updateBanner;
         bool _updateBannerClosed; // closed with its X: hidden until the next launch
 
-        /// <summary>UPDATE or RESTART on the update banner. Set by the game.</summary>
+        /// <summary>RESTART on the update banner. Set by the game.</summary>
         public Action OnUpdateBannerButton;
 
         void BuildUpdateBanner()
@@ -661,12 +661,15 @@ namespace StackSurge.UI
                 () => OnUpdateBannerButton?.Invoke(), CloseUpdateBanner);
         }
 
-        /// <summary>Shows the update banner at this stage of Google Play's in-app update (None hides it).</summary>
+        /// <summary>
+        /// Shows the update banner while Google Play downloads an update and once it's ready to install. An update that
+        /// is only available shows nothing here: Google's own prompt asks first.
+        /// </summary>
         public void ShowUpdateBanner(PlayAppUpdate.Stage stage, float progress)
         {
             if (_updateBanner == null) return;
             bool wasVisible = _updateBanner.Visible;
-            bool show = stage != PlayAppUpdate.Stage.None && (!_updateBannerClosed || stage == PlayAppUpdate.Stage.Downloading);
+            bool show = stage == PlayAppUpdate.Stage.Downloading || (stage == PlayAppUpdate.Stage.Ready && !_updateBannerClosed);
             if (show) _updateBanner.Show(stage, progress);
             else _updateBanner.Hide();
             if (wasVisible != _updateBanner.Visible && _mainMenuRoot.activeInHierarchy) FitMenuToScreen(animate: true);

@@ -8,8 +8,8 @@ using UnityEngine.UI;
 namespace StackSurge.UI
 {
     /// <summary>
-    /// The bar at the bottom of the main menu that offers a new version from Google Play: "Update available" with
-    /// UPDATE, then the download's progress, then "Update ready" with RESTART. Its X hides it until the next launch.
+    /// The bar at the bottom of the main menu while Google Play updates the game: the download's progress, then
+    /// "Update ready" with RESTART. Its X (on "Update ready") hides it until the next launch.
     /// </summary>
     public class UpdateBannerView : MonoBehaviour
     {
@@ -131,20 +131,19 @@ namespace StackSurge.UI
             return hit.gameObject;
         }
 
-        /// <summary>Shows the banner for this stage (None hides it). It slides up the first time it appears.</summary>
+        /// <summary>Shows the download or the ready update (other stages hide it). It slides up the first time it appears.</summary>
         public void Show(PlayAppUpdate.Stage stage, float progress)
         {
-            if (stage == PlayAppUpdate.Stage.None)
+            if (stage != PlayAppUpdate.Stage.Downloading && stage != PlayAppUpdate.Stage.Ready)
             {
                 Hide();
                 return;
             }
             bool downloading = stage == PlayAppUpdate.Stage.Downloading;
-            _title.text = stage == PlayAppUpdate.Stage.Ready ? "Update ready" : downloading ? "Downloading update" : "Update available";
-            _body.text = stage == PlayAppUpdate.Stage.Ready ? "Restart the game to finish."
-                : downloading ? "You can keep playing meanwhile." : "A new version is on Google Play.";
+            _title.text = downloading ? "Downloading update" : "Update ready";
+            _body.text = downloading ? "You can keep playing meanwhile." : "Restart the game to finish.";
             _button.SetActive(!downloading);
-            _buttonLabel.text = stage == PlayAppUpdate.Stage.Ready ? "RESTART" : "UPDATE";
+            _buttonLabel.text = "RESTART";
             _bar.SetActive(downloading);
             _barFill.anchorMax = new Vector2(Mathf.Clamp01(progress), 1f);
             _close.SetActive(!downloading);

@@ -190,7 +190,7 @@ namespace StackSurge
             GameObject consentObj = new GameObject("[AnalyticsConsentUI]");
             _analyticsConsentUI = consentObj.AddComponent<AnalyticsConsentUI>();
             // A push tap that launched the app waits behind the consent prompt; open it once the player answers.
-            _analyticsConsentUI.Initialize(_save, onDecided: () => { if (!TryRoutePendingPush()) TryOfferPlayerSwitch(); });
+            _analyticsConsentUI.Initialize(_save, onDecided: () => { if (!TryRoutePendingPush() && !TryOfferPlayerSwitch()) TryPromptUpdate(); });
 
             // UGS / Challenges async initialization
             _view.UpdateLoadingStatus("CONNECTING TO SERVICES...");
@@ -679,6 +679,10 @@ namespace StackSurge
             if (pauseStatus)
             {
                 AutoPauseRun();
+                // A downloaded update installs while the game is in the background (Google does it silently), unless
+                // a run is in progress: that would close the game on it.
+                if (_appUpdate != null && _appUpdate.Current == PlayAppUpdate.Stage.Ready && !_playing && !_inTutorial)
+                    _appUpdate.Restart();
                 // Reminders are only armed while the app is in the background, so they never fire mid-game.
                 NotificationService.Instance?.OnAppBackgrounded();
                 if (_friendsService != null) _ = _friendsService.PublishPresenceAsync(PresenceStatus.Offline);
@@ -1329,16 +1333,43 @@ namespace StackSurge
         // ── In-app updates ───────────────────────────────────────────────────
         PlayAppUpdate _appUpdate;
 
-        /// <summary>Google Play's in-app updates, offered by the banner at the bottom of the menu.</summary>
+        const string UpdatePromptDayKey = "update_prompt_day";
+
+        /// <summary>
+        /// Google Play's in-app updates. When one is available, Google's own prompt opens on the menu (see
+        /// <see cref="TryPromptUpdate"/>); the banner at the bottom of the menu then shows the download and, once it's
+        /// done, offers RESTART. An update left waiting installs when the player leaves the game (never mid-run).
+        /// </summary>
         void SetUpAppUpdates()
         {
             _appUpdate = gameObject.AddComponent<PlayAppUpdate>();
-            _appUpdate.Changed += () => _view.ShowUpdateBanner(_appUpdate.Current, _appUpdate.Progress);
-            _view.OnUpdateBannerButton = () =>
-            {
-                if (_appUpdate.Current == PlayAppUpdate.Stage.Ready) _appUpdate.Restart();
-                else _appUpdate.StartUpdate();
-            };
+            _appUpdate.Changed += OnAppUpdateChanged;
+            _view.OnUpdateBannerButton = _appUpdate.Restart;
+            if (_switchPlayerUI != null) _switchPlayerUI.Closed += () => TryPromptUpdate();
+        }
+
+        void OnAppUpdateChanged()
+        {
+            _view.ShowUpdateBanner(_appUpdate.Current, _appUpdate.Progress);
+            if (_appUpdate.Current == PlayAppUpdate.Stage.Available) TryPromptUpdate();
+        }
+
+        /// <summary>
+        /// Opens Google's update prompt when an update is available: on the menu with nothing else showing (consent,
+        /// notifications, the Play Games switch), and at most once a day, so a player who says no isn't asked every launch.
+        /// </summary>
+        bool TryPromptUpdate()
+        {
+            if (_appUpdate == null || _appUpdate.Current != PlayAppUpdate.Stage.Available) return false;
+            if (_playing || _inTutorial || _view == null) return false;
+            if (_view.IsLoadingScreenActive || _view.IsGameOverShowing) return false;
+            if (AnalyticsConsent.NeedsPrompt(_save) || PushPermissionPromptUI.IsOpen) return false;
+            if (_switchPlayerUI != null && _switchPlayerUI.IsOpen) return false;
+            string today = DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            if (PlayerPrefs.GetString(UpdatePromptDayKey, "") == today) return false;
+            PlayerPrefs.SetString(UpdatePromptDayKey, today);
+            _appUpdate.StartUpdate();
+            return true;
         }
 
         void OnLoadingScreenFinished()
@@ -1365,8 +1396,9 @@ namespace StackSurge
 
             // Back on the menu after a run: open anything tapped meanwhile, otherwise this is the moment for the
             // soft notification prompt (it checks permission, consent, ask count and spacing itself).
-            if (!TryRoutePendingPush() && !TryOfferPlayerSwitch())
-                PushPermissionPromptUI.ShowIfEligible(_save, onClosed: () => TryRoutePendingPush());
+            if (!TryRoutePendingPush() && !TryOfferPlayerSwitch()
+                && !PushPermissionPromptUI.ShowIfEligible(_save, onClosed: () => { if (!TryRoutePendingPush()) TryPromptUpdate(); }))
+                TryPromptUpdate();
         }
 
         async void OnPlayerNameChangedFromMainMenu(string newName)

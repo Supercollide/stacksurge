@@ -9,9 +9,10 @@ namespace StackSurge.Meta
 {
     /// <summary>
     /// Google Play's in-app updates. Asks Play whether a newer version is available to this player (Play knows about
-    /// staged rollouts, so it only says yes when this player can get it). If they agree in Google's prompt, Play
-    /// downloads it in the background (a "flexible" update) while they keep playing, and the game restarts into it when
-    /// they choose. Only works on Android, for copies installed from Google Play; elsewhere it stays at <see cref="Stage.None"/>.
+    /// staged rollouts, so it only says yes when this player can get it). <see cref="StartUpdate"/> opens Google's prompt;
+    /// if they agree, Play downloads it in the background (a "flexible" update) while they keep playing, and
+    /// <see cref="Restart"/> installs it: in the foreground the game restarts into it, in the background Google installs
+    /// it silently. Only works on Android, for copies installed from Google Play; elsewhere it stays at <see cref="Stage.None"/>.
     /// </summary>
     public class PlayAppUpdate : MonoBehaviour
     {
@@ -45,7 +46,8 @@ namespace StackSurge.Meta
             StartCoroutine(UpdateRoutine());
         }
 
-        /// <summary>Installs the downloaded update; the game closes and opens again on the new version.</summary>
+        /// <summary>Installs the downloaded update: in the foreground the game closes and opens again on the new version,
+        /// in the background Google installs it silently.</summary>
         public void Restart()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -119,7 +121,7 @@ namespace StackSurge.Meta
                 Set(Stage.Ready, 1f);
                 yield break;
             }
-            // Declined in Google's prompt, or the download failed: offer it again.
+            // Declined in Google's prompt, or the download failed: it stays available (the game asks again another day).
             if (request.Error != AppUpdateErrorCode.NoError) Debug.Log("[PlayAppUpdate] Update not started: " + request.Error);
             Set(Stage.Available, 0f);
             Check(); // Play may say something else now (e.g. no longer available)
